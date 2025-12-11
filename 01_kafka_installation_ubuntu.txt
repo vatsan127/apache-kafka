@@ -1,0 +1,236 @@
+================================================================================
+                APACHE KAFKA INSTALLATION ON UBUNTU LINUX (KRaft Mode)
+================================================================================
+
+================================================================================
+DOWNLOAD APACHE KAFKA
+================================================================================
+
+STEP 1: Navigate to download location
+    cd /opt
+
+STEP 2: Download Kafka (version 3.9.0)
+    sudo wget https://downloads.apache.org/kafka/3.9.0/kafka_2.13-3.9.0.tgz
+
+STEP 3: Extract the archive
+    sudo tar -xzf kafka_2.13-3.9.0.tgz
+
+STEP 4: Rename for convenience
+    sudo mv kafka_2.13-3.9.0 kafka
+
+STEP 5: Set ownership (optional - for non-root user)
+    sudo chown -R $USER:$USER /opt/kafka
+
+STEP 6: Verify
+    ls /opt/kafka/
+
+    You should see: bin, config, libs, licenses, etc.
+
+================================================================================
+CONFIGURE KAFKA (KRaft Mode)
+================================================================================
+
+KRaft mode eliminates the need for Zookeeper.
+
+STEP 1: Navigate to Kafka config directory
+    cd /opt/kafka/config
+
+STEP 2: View the KRaft config file
+    cat kraft/server.properties
+
+STEP 3: Edit KRaft configuration
+    vim kraft/server.properties
+
+    Key settings to review/modify:
+
+    ------- IMPORTANT SETTINGS -------
+
+    # Unique node ID (change for each broker in cluster)
+    node.id=1
+
+    # Roles: broker, controller, or both
+    process.roles=broker,controller
+
+    # Controller quorum voters (format: nodeId@host:port)
+    controller.quorum.voters=1@localhost:9093
+
+    # Listeners
+    listeners=PLAINTEXT://:9092,CONTROLLER://:9093
+
+    # Advertised listeners (what clients connect to)
+    advertised.listeners=PLAINTEXT://localhost:9092
+
+    # Log directory (where data is stored)
+    log.dirs=/opt/kafka/kraft-combined-logs
+
+    # Number of partitions for new topics (default)
+    num.partitions=1
+
+    # Replication factor for offsets topic
+    offsets.topic.replication.factor=1
+
+    # Replication factor for transaction state log
+    transaction.state.log.replication.factor=1
+    transaction.state.log.min.isr=1
+
+STEP 4: Create log directory
+    mkdir -p /opt/kafka/kraft-combined-logs
+
+STEP 5: Generate a Cluster UUID
+    KAFKA_CLUSTER_ID="$(/opt/kafka/bin/kafka-storage.sh random-uuid)"
+    echo $KAFKA_CLUSTER_ID
+
+    Save this UUID! Example: MkU3OEVBNTcwNTJENDM2Qk
+
+STEP 6: Format the storage directory
+    /opt/kafka/bin/kafka-storage.sh format \
+        -t $KAFKA_CLUSTER_ID \
+        -c /opt/kafka/config/kraft/server.properties
+
+    Expected output: "Formatting /opt/kafka/kraft-combined-logs"
+
+================================================================================
+SETUP PATH & ALIASES
+================================================================================
+
+Add Kafka to PATH:
+    echo 'export KAFKA_HOME=/opt/kafka' >> ~/.bashrc
+    echo 'export PATH=$PATH:$KAFKA_HOME/bin' >> ~/.bashrc
+
+Add convenient aliases:
+    echo 'alias kafka-start="/opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/kraft/server.properties"' >> ~/.bashrc
+    echo 'alias kafka-stop="/opt/kafka/bin/kafka-server-stop.sh"' >> ~/.bashrc
+    echo 'alias kafka-logs="tail -f /opt/kafka/logs/server.log"' >> ~/.bashrc
+
+Apply changes:
+    source ~/.bashrc
+
+Verify PATH:
+    which kafka-topics.sh
+
+================================================================================
+START / STOP KAFKA
+================================================================================
+
+Using aliases:
+    kafka-start     # Start Kafka in background
+    kafka-stop      # Stop Kafka
+    kafka-logs      # View Kafka logs
+
+Using full path:
+    /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/kraft/server.properties
+    /opt/kafka/bin/kafka-server-stop.sh
+
+Force kill (last resort):
+    ps aux | grep kafka
+    kill -9 <PID>
+
+================================================================================
+BASIC COMMANDS
+================================================================================
+
+TOPIC COMMANDS
+--------------
+
+Create Topic:
+    kafka-topics.sh --create \
+        --topic my-topic \
+        --bootstrap-server localhost:9092 \
+        --partitions 3 \
+        --replication-factor 1
+
+List Topics:
+    kafka-topics.sh --list --bootstrap-server localhost:9092
+
+Describe Topic:
+    kafka-topics.sh --describe \
+        --topic my-topic \
+        --bootstrap-server localhost:9092
+
+Delete Topic:
+    kafka-topics.sh --delete \
+        --topic my-topic \
+        --bootstrap-server localhost:9092
+
+Alter Topic (change partitions):
+    kafka-topics.sh --alter \
+        --topic my-topic \
+        --partitions 5 \
+        --bootstrap-server localhost:9092
+
+
+PRODUCER COMMANDS
+-----------------
+
+Producer without Key:
+    kafka-console-producer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092
+
+Producer with Key:
+    kafka-console-producer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092 \
+        --property "parse.key=true" \
+        --property "key.separator=:"
+
+    Format: key:value
+
+    Example input:
+        user1:{"name":"John","action":"login"}
+        user2:{"name":"Jane","action":"purchase"}
+        user1:{"name":"John","action":"logout"}
+
+    Messages with same key go to same partition (useful for ordering)
+
+
+CONSUMER COMMANDS
+-----------------
+
+Consume from Beginning:
+    kafka-console-consumer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092 \
+        --from-beginning
+
+Consume New Messages:
+    kafka-console-consumer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092
+
+Consume with Group:
+    kafka-console-consumer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092 \
+        --group my-consumer-group
+
+Show Key and Value:
+    kafka-console-consumer.sh \
+        --topic my-topic \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true \
+        --property print.timestamp=true
+
+
+CONSUMER GROUP COMMANDS
+-----------------------
+
+List Groups:
+    kafka-consumer-groups.sh --list \
+        --bootstrap-server localhost:9092
+
+Describe Group:
+    kafka-consumer-groups.sh --describe \
+        --group my-consumer-group \
+        --bootstrap-server localhost:9092
+
+Reset Offsets:
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group my-consumer-group \
+        --topic my-topic \
+        --reset-offsets \
+        --to-earliest \
+        --execute
+
