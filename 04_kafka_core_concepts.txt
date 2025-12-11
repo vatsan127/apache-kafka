@@ -1,0 +1,581 @@
+================================================================================
+                         KAFKA CORE CONCEPTS DEEP DIVE
+================================================================================
+
+================================================================================
+1. TOPICS
+================================================================================
+
+WHAT IS A TOPIC?
+    - Named stream/category of messages
+    - Logical grouping of related data
+    - Similar to a table in database or folder in filesystem
+    - Identified by unique name within cluster
+
+    Examples:
+        - "orders"           → all order events
+        - "user-signups"     → user registration events
+        - "payment-logs"     → payment transaction logs
+        - "sensor-data"      → IoT sensor readings
+
+TOPIC CHARACTERISTICS:
+    - Multi-producer    : Multiple producers can write to same topic
+    - Multi-consumer    : Multiple consumers can read from same topic
+    - Immutable         : Messages cannot be modified after written
+    - Append-only       : New messages added at end only
+    - Retention-based   : Messages kept based on time or size policy
+
+TOPIC NAMING CONVENTIONS:
+    Good:
+        user-events
+        order.created
+        payments_processed
+        inventory-updates-v2
+
+    Avoid:
+        __internal        (reserved prefix)
+        topic with spaces
+        UPPERCASE         (use lowercase)
+        very-long-topic-name-that-is-hard-to-read
+
+CREATE TOPIC COMMAND:
+    kafka-topics.sh --create \
+        --topic order-events \
+        --bootstrap-server localhost:9092 \
+        --partitions 6 \
+        --replication-factor 3
+
+TOPIC CONFIGURATION:
+    retention.ms            : How long to keep messages (default: 7 days)
+    retention.bytes         : Max size per partition (default: unlimited)
+    cleanup.policy          : delete or compact
+    max.message.bytes       : Max message size (default: 1MB)
+    min.insync.replicas     : Min replicas that must ack (for durability)
+
+    View config:
+        kafka-configs.sh --describe \
+            --topic order-events \
+            --bootstrap-server localhost:9092
+
+    Alter config:
+        kafka-configs.sh --alter \
+            --topic order-events \
+            --add-config retention.ms=86400000 \
+            --bootstrap-server localhost:9092
+
+================================================================================
+2. PARTITIONS
+================================================================================
+
+WHAT IS A PARTITION?
+    - Topic is divided into partitions
+    - Each partition is an ordered, immutable sequence of messages
+    - Unit of parallelism in Kafka
+    - Physically stored as directory on broker's disk
+
+    Topic "orders" with 3 partitions:
+
+    +------------------+
+    |   Topic: orders  |
+    +------------------+
+           |
+    +------+------+------+
+    |      |      |      |
+    v      v      v      v
+    P0     P1     P2
+    [0]    [0]    [0]
+    [1]    [1]    [1]
+    [2]    [2]    [2]
+    [3]    [3]
+    [4]
+
+    P0 has 5 messages (offsets 0-4)
+    P1 has 4 messages (offsets 0-3)
+    P2 has 3 messages (offsets 0-2)
+
+WHY PARTITIONS?
+
+1. Parallelism:
+   - Multiple consumers read different partitions simultaneously
+   - More partitions = more parallel consumers
+
+2. Scalability:
+   - Partitions distributed across brokers
+   - Add partitions to handle more load
+
+3. Ordering:
+   - Messages ordered WITHIN partition (not across)
+   - Use same key for related messages needing order
+
+PARTITION DISTRIBUTION:
+    3 partitions across 3 brokers:
+
+    Broker 1        Broker 2        Broker 3
+    +--------+      +--------+      +--------+
+    |   P0   |      |   P1   |      |   P2   |
+    +--------+      +--------+      +--------+
+
+    6 partitions across 3 brokers:
+
+    Broker 1        Broker 2        Broker 3
+    +--------+      +--------+      +--------+
+    | P0, P3 |      | P1, P4 |      | P2, P5 |
+    +--------+      +--------+      +--------+
+
+HOW MESSAGES GO TO PARTITIONS:
+
+1. Round-Robin (no key):
+   - Messages distributed evenly across partitions
+   - No ordering guarantee
+
+   msg1 → P0
+   msg2 → P1
+   msg3 → P2
+   msg4 → P0
+   ...
+
+2. Key-Based Hashing (with key):
+   - hash(key) % num_partitions = target partition
+   - Same key always goes to same partition
+   - Guarantees ordering for same key
+
+   key="user-123" → hash → P1
+   key="user-456" → hash → P0
+   key="user-123" → hash → P1  (same partition!)
+
+3. Custom Partitioner:
+   - Implement your own logic
+   - Example: route by region, priority, etc.
+
+CHOOSING PARTITION COUNT:
+
+    Factors to consider:
+    - Expected throughput (more partitions = more throughput)
+    - Number of consumers (partitions >= consumers)
+    - Broker resources (each partition uses memory, file handles)
+    - Ordering requirements (fewer partitions = simpler ordering)
+
+    Rule of thumb:
+    - Start with: partitions = max(expected_throughput_MB / 10, num_consumers)
+    - Can increase later, but CANNOT decrease
+
+    Warning:
+    - Too few: limits parallelism
+    - Too many: overhead, more leader elections, longer recovery
+
+PARTITION ON DISK:
+    /opt/kafka/kraft-combined-logs/
+    └── orders-0/                    # Topic "orders", Partition 0
+        ├── 00000000000000000000.log      # Segment file
+        ├── 00000000000000000000.index    # Offset index
+        ├── 00000000000000000000.timeindex # Timestamp index
+        └── leader-epoch-checkpoint
+
+================================================================================
+3. OFFSETS
+================================================================================
+
+WHAT IS AN OFFSET?
+    - Unique sequential ID for each message within a partition
+    - Starts from 0 and increments by 1
+    - Immutable - never changes once assigned
+    - Partition-specific (each partition has its own offset sequence)
+
+    Partition 0:
+    +-----+-----+-----+-----+-----+-----+
+    |  0  |  1  |  2  |  3  |  4  |  5  |  ← Offsets
+    +-----+-----+-----+-----+-----+-----+
+    |msgA |msgB |msgC |msgD |msgE |msgF |  ← Messages
+    +-----+-----+-----+-----+-----+-----+
+
+OFFSET TYPES:
+
+1. Log-End Offset (LEO):
+   - Offset of next message to be written
+   - Highest offset + 1
+
+2. High Watermark (HW):
+   - Offset up to which consumers can read
+   - All replicas have this message
+   - HW <= LEO
+
+3. Consumer Offset:
+   - Last offset consumed by consumer
+   - Stored in __consumer_offsets topic
+
+    Partition view:
+
+    [0][1][2][3][4][5][6][7][8][9][ ][ ]
+                      ^        ^  ^
+                      |        |  |
+                Consumer    HW   LEO
+                Offset=5   =9   =10
+
+    Consumer has read up to offset 5
+    Can read up to offset 9 (high watermark)
+    Next message will be written at offset 10
+
+CONSUMER OFFSET MANAGEMENT:
+
+    Automatic Commit:
+        enable.auto.commit=true        # Default
+        auto.commit.interval.ms=5000   # Every 5 seconds
+
+        Pros: Simple, no manual management
+        Cons: May lose messages or reprocess on failure
+
+    Manual Commit:
+        enable.auto.commit=false
+
+        // Commit after processing
+        consumer.commitSync();   // Blocking
+        consumer.commitAsync();  // Non-blocking
+
+        Pros: Precise control, at-least-once guarantee
+        Cons: More code, need to handle failures
+
+OFFSET RESET POLICY:
+
+    What happens when consumer starts with no committed offset?
+
+    auto.offset.reset=earliest   # Start from beginning (offset 0)
+    auto.offset.reset=latest     # Start from end (new messages only)
+    auto.offset.reset=none       # Throw exception
+
+    Common scenarios:
+    - New consumer group       → uses reset policy
+    - Offset expired (deleted) → uses reset policy
+    - Existing offset found    → resumes from committed offset
+
+OFFSET STORAGE:
+
+    Old way (deprecated): Zookeeper
+    Current way: __consumer_offsets topic
+
+    __consumer_offsets topic:
+    - Internal Kafka topic
+    - 50 partitions by default
+    - Stores: group.id + topic + partition → offset
+    - Compacted (keeps only latest per key)
+
+    View consumer offsets:
+        kafka-consumer-groups.sh --describe \
+            --group my-group \
+            --bootstrap-server localhost:9092
+
+    Output:
+        GROUP     TOPIC    PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+        my-group  orders   0          150             200             50
+        my-group  orders   1          180             180             0
+        my-group  orders   2          90              120             30
+
+    LAG = LOG-END-OFFSET - CURRENT-OFFSET (messages not yet consumed)
+
+================================================================================
+4. SEGMENTS
+================================================================================
+
+WHAT IS A SEGMENT?
+    - Partition is divided into segments
+    - Each segment is a file on disk
+    - Enables efficient data management and cleanup
+    - Active segment receives new messages
+
+    Partition 0:
+    +------------------+------------------+------------------+
+    | Segment 0        | Segment 1        | Segment 2        |
+    | (offsets 0-999)  | (offsets 1000-   | (offsets 2000+)  |
+    | CLOSED           |  1999) CLOSED    | ACTIVE           |
+    +------------------+------------------+------------------+
+
+SEGMENT FILES:
+
+    /opt/kafka/kraft-combined-logs/orders-0/
+    │
+    ├── 00000000000000000000.log        # Messages (offset 0-999)
+    ├── 00000000000000000000.index      # Offset → Position mapping
+    ├── 00000000000000000000.timeindex  # Timestamp → Offset mapping
+    │
+    ├── 00000000000000001000.log        # Messages (offset 1000-1999)
+    ├── 00000000000000001000.index
+    ├── 00000000000000001000.timeindex
+    │
+    ├── 00000000000000002000.log        # ACTIVE segment (offset 2000+)
+    ├── 00000000000000002000.index
+    └── 00000000000000002000.timeindex
+
+    File naming: first offset in segment (20 digit, zero-padded)
+
+SEGMENT FILES EXPLAINED:
+
+1. .log file:
+   - Actual message data
+   - Append-only
+   - Contains: offset, timestamp, key, value, headers
+
+2. .index file:
+   - Maps offset → physical position in .log file
+   - Sparse index (not every offset, sampled)
+   - Enables fast lookup by offset
+
+   Offset 1500 lookup:
+   1. Binary search in .index → find offset 1400 at position 28000
+   2. Sequential scan from position 28000 until offset 1500
+
+3. .timeindex file:
+   - Maps timestamp → offset
+   - Enables time-based lookup
+   - Used for: "give me messages after timestamp X"
+
+SEGMENT CONFIGURATION:
+
+    log.segment.bytes=1073741824    # 1GB, roll to new segment when reached
+    log.segment.ms=604800000        # 7 days, roll even if size not reached
+
+    When segment rolls:
+    - Current segment closed (immutable)
+    - New segment created (becomes active)
+    - Old segment eligible for cleanup
+
+SEGMENT CLEANUP:
+
+    Two cleanup policies:
+
+    1. Delete (cleanup.policy=delete):
+       - Remove old segments based on retention
+       - retention.ms=604800000      # Delete after 7 days
+       - retention.bytes=1073741824  # Delete if partition > 1GB
+
+       Timeline:
+       Day 1: Segment 0 created
+       Day 3: Segment 1 created
+       Day 5: Segment 2 created
+       Day 8: Segment 0 deleted (> 7 days old)
+
+    2. Compact (cleanup.policy=compact):
+       - Keep only latest value per key
+       - Used for changelogs, state stores
+       - Never lose latest state of any key
+
+       Before compaction:
+       [k1:v1][k2:v1][k1:v2][k3:v1][k2:v2][k1:v3]
+
+       After compaction:
+       [k3:v1][k2:v2][k1:v3]   # Only latest value per key
+
+    Combined (cleanup.policy=compact,delete):
+       - Compact first, then delete old compacted segments
+
+================================================================================
+5. REPLICATION
+================================================================================
+
+WHAT IS REPLICATION?
+    - Each partition has multiple copies (replicas)
+    - Replicas stored on different brokers
+    - Provides fault tolerance and high availability
+
+    Replication Factor = 3 means 3 copies of each partition
+
+    Topic "orders" (3 partitions, RF=3):
+
+    Broker 1         Broker 2         Broker 3
+    +----------+     +----------+     +----------+
+    | P0 (L)   |     | P0 (F)   |     | P0 (F)   |
+    | P1 (F)   |     | P1 (L)   |     | P1 (F)   |
+    | P2 (F)   |     | P2 (F)   |     | P2 (L)   |
+    +----------+     +----------+     +----------+
+
+    L = Leader, F = Follower
+
+LEADER AND FOLLOWERS:
+
+    Leader:
+    - Handles ALL reads and writes for partition
+    - Only one leader per partition
+    - Receives messages from producers
+    - Serves messages to consumers
+
+    Followers:
+    - Replicate data from leader
+    - Do NOT serve client requests (in default config)
+    - Ready to become leader if current leader fails
+    - Stay in sync with leader
+
+REPLICATION FLOW:
+
+    1. Producer sends message to Leader
+    2. Leader appends to local log
+    3. Followers fetch from Leader
+    4. Followers append to their local log
+    5. Leader updates High Watermark when all in-sync replicas have message
+    6. Consumer can read up to High Watermark
+
+    Producer → Leader (Broker 1)
+                  |
+                  +--→ Follower (Broker 2) ──┐
+                  |                          |
+                  +--→ Follower (Broker 3) ──┴─→ HW updated → Consumer can read
+
+IN-SYNC REPLICAS (ISR):
+
+    - Replicas that are "caught up" with leader
+    - Within replica.lag.time.max.ms (default 30s)
+    - Only ISR members can become leader
+
+    Healthy state:
+        Partition 0: Leader=1, ISR=[1,2,3]    # All replicas in sync
+
+    Unhealthy state:
+        Partition 0: Leader=1, ISR=[1,2]      # Broker 3 lagging
+
+    Check ISR:
+        kafka-topics.sh --describe \
+            --topic orders \
+            --bootstrap-server localhost:9092
+
+    Output:
+        Topic: orders  Partition: 0  Leader: 1  Replicas: 1,2,3  Isr: 1,2,3
+
+MIN IN-SYNC REPLICAS:
+
+    min.insync.replicas=2
+
+    - Minimum ISR count required for producer to succeed (when acks=all)
+    - If ISR drops below this, producer gets error
+    - Prevents data loss when brokers fail
+
+    Example (RF=3, min.insync.replicas=2):
+        ISR=[1,2,3] → Writes succeed
+        ISR=[1,2]   → Writes succeed (still have 2)
+        ISR=[1]     → Writes FAIL (below minimum)
+
+LEADER ELECTION:
+
+    When leader fails:
+    1. Controller detects failure (via heartbeats)
+    2. Controller selects new leader from ISR
+    3. Controller notifies all brokers
+    4. Clients discover new leader via metadata refresh
+
+    Unclean Leader Election (unclean.leader.election.enable):
+        false (default): Only ISR member can become leader
+                         May cause unavailability if ISR empty
+        true:            Allow out-of-sync replica as leader
+                         May cause data loss
+
+REPLICATION FACTOR RECOMMENDATIONS:
+
+    Development:     RF=1 (no fault tolerance, saves resources)
+    Production:      RF=3 (survives 2 broker failures)
+    Critical data:   RF=3 with min.insync.replicas=2
+
+    Cannot be higher than number of brokers!
+
+================================================================================
+6. BROKER
+================================================================================
+
+WHAT IS A BROKER?
+    - Single Kafka server instance
+    - Stores data and serves clients
+    - Identified by unique broker.id
+    - Part of a cluster
+
+BROKER RESPONSIBILITIES:
+    - Receive messages from producers
+    - Store messages to disk
+    - Serve messages to consumers
+    - Replicate data to/from other brokers
+    - Participate in leader election
+    - Handle client metadata requests
+
+BROKER IN CLUSTER:
+
+    +--------------------------------------------------+
+    |                  Kafka Cluster                    |
+    |                                                   |
+    |  +----------+  +----------+  +----------+        |
+    |  | Broker 1 |  | Broker 2 |  | Broker 3 |        |
+    |  | id=1     |  | id=2     |  | id=3     |        |
+    |  +----------+  +----------+  +----------+        |
+    |       |             |             |              |
+    |       +-------------+-------------+              |
+    |                     |                            |
+    |            Controller (one of them)              |
+    +--------------------------------------------------+
+
+CONTROLLER (KRaft Mode):
+    - One broker acts as controller
+    - Manages cluster metadata
+    - Handles partition leader election
+    - In KRaft: controller is part of broker (no Zookeeper)
+
+    process.roles=broker,controller  # Combined mode
+    process.roles=broker             # Broker only
+    process.roles=controller         # Controller only (dedicated)
+
+BROKER CONFIGURATION (key settings):
+
+    broker.id=1                           # Unique ID
+    listeners=PLAINTEXT://:9092           # How clients connect
+    log.dirs=/opt/kafka/kraft-combined-logs  # Data directory
+    num.partitions=1                      # Default partitions for new topics
+    default.replication.factor=1          # Default RF for new topics
+    min.insync.replicas=1                 # Min ISR for acks=all
+    log.retention.hours=168               # 7 days retention
+    log.segment.bytes=1073741824          # 1GB segment size
+
+================================================================================
+CONCEPT RELATIONSHIPS
+================================================================================
+
+    CLUSTER
+       |
+       +-- BROKER (multiple)
+              |
+              +-- TOPIC (multiple)
+                     |
+                     +-- PARTITION (multiple)
+                            |
+                            +-- SEGMENT (multiple)
+                                   |
+                                   +-- MESSAGE (offset)
+
+    Topic "orders":
+    - 3 partitions (P0, P1, P2)
+    - Replication factor 3
+    - Distributed across 3 brokers
+    - Each partition has leader + 2 followers
+    - Each partition divided into segments
+    - Each message has unique offset within partition
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++-------------+----------------------------------------------------------+
+| Concept     | Description                                              |
++-------------+----------------------------------------------------------+
+| Topic       | Named stream of messages (logical grouping)              |
++-------------+----------------------------------------------------------+
+| Partition   | Ordered log within topic (unit of parallelism)           |
++-------------+----------------------------------------------------------+
+| Offset      | Sequential ID of message within partition                |
++-------------+----------------------------------------------------------+
+| Segment     | Physical file storing portion of partition               |
++-------------+----------------------------------------------------------+
+| Replica     | Copy of partition on different broker                    |
++-------------+----------------------------------------------------------+
+| Leader      | Replica handling all reads/writes                        |
++-------------+----------------------------------------------------------+
+| Follower    | Replica syncing from leader                              |
++-------------+----------------------------------------------------------+
+| ISR         | In-Sync Replicas (caught up with leader)                 |
++-------------+----------------------------------------------------------+
+| Broker      | Single Kafka server                                      |
++-------------+----------------------------------------------------------+
+| Controller  | Broker managing cluster metadata                         |
++-------------+----------------------------------------------------------+
+
+================================================================================

@@ -1,0 +1,268 @@
+================================================================================
+                         APACHE KAFKA FUNDAMENTALS
+================================================================================
+
+================================================================================
+WHAT IS APACHE KAFKA?
+================================================================================
+
+Apache Kafka is a distributed event streaming platform.
+
+In simple terms:
+    - A messaging system that handles real-time data feeds
+    - Acts as a central hub where applications send and receive messages
+    - Stores messages reliably and allows multiple consumers to read them
+
+Key characteristics:
+    - Distributed      : Runs across multiple servers (brokers)
+    - Scalable         : Add more brokers to handle more data
+    - Fault-tolerant   : Data is replicated, no single point of failure
+    - High-throughput  : Handles millions of messages per second
+    - Persistent       : Messages are stored on disk, not just in memory
+
+================================================================================
+REAL-WORLD USE CASES
+================================================================================
+
+1. MESSAGING
+   - Decoupling applications (producer doesn't need to know consumer)
+   - Asynchronous communication between microservices
+   - Example: Order service sends message, Inventory service receives it
+
+2. LOG AGGREGATION
+   - Collecting logs from multiple services into one place
+   - Centralized logging for debugging and monitoring
+   - Example: All microservices send logs to Kafka → ELK Stack
+
+3. STREAM PROCESSING
+   - Real-time data transformation and analysis
+   - Processing data as it arrives, not in batches
+   - Example: Fraud detection analyzing transactions in real-time
+
+4. EVENT SOURCING
+   - Storing state changes as sequence of events
+   - Rebuilding application state by replaying events
+   - Example: Banking transactions as immutable event log
+
+5. DATA INTEGRATION
+   - Moving data between systems
+   - ETL pipelines (Extract, Transform, Load)
+   - Example: Database changes → Kafka → Data Warehouse
+
+================================================================================
+BENEFITS OF KAFKA
+================================================================================
+
+HIGH THROUGHPUT
+    - Handles millions of messages per second
+    - Sequential disk I/O (faster than random access)
+    - Zero-copy transfer (kernel to network without CPU)
+    - Batching of messages
+
+SCALABILITY
+    - Horizontal scaling by adding brokers
+    - Partitions distribute load across cluster
+    - No downtime when scaling
+
+DURABILITY
+    - Messages persisted to disk
+    - Configurable retention (days, weeks, forever)
+    - Replication across multiple brokers
+
+FAULT TOLERANCE
+    - Automatic leader election if broker fails
+    - Replicas take over seamlessly
+    - No data loss with proper replication factor
+
+LOW LATENCY
+    - Millisecond message delivery
+    - Suitable for real-time applications
+
+DECOUPLING
+    - Producers and consumers are independent
+    - Add/remove consumers without affecting producers
+    - Different consumption speeds supported
+
+REPLAYABILITY
+    - Consumers can re-read old messages
+    - Reset offset to reprocess data
+    - Useful for bug fixes, new consumers
+
+================================================================================
+KAFKA VS TRADITIONAL MESSAGING SYSTEMS
+================================================================================
+
++------------------+---------------------------+---------------------------+
+|     FEATURE      |      TRADITIONAL MQ       |        KAFKA              |
+|                  |   (RabbitMQ, ActiveMQ)    |                           |
++------------------+---------------------------+---------------------------+
+| Message Model    | Queue (one consumer)      | Log (multiple consumers)  |
+|                  | or Topic (pub-sub)        | read same message         |
++------------------+---------------------------+---------------------------+
+| Message Deletion | Deleted after consumed    | Retained based on policy  |
+|                  |                           | (time or size)            |
++------------------+---------------------------+---------------------------+
+| Consumer Tracking| Broker tracks delivery    | Consumer tracks offset    |
+|                  |                           | (more flexible)           |
++------------------+---------------------------+---------------------------+
+| Replay Messages  | Not possible              | Yes, reset offset         |
++------------------+---------------------------+---------------------------+
+| Throughput       | Thousands/sec             | Millions/sec              |
++------------------+---------------------------+---------------------------+
+| Ordering         | Queue-level               | Partition-level           |
++------------------+---------------------------+---------------------------+
+| Storage          | Until consumed            | Configurable retention    |
++------------------+---------------------------+---------------------------+
+| Use Case         | Task queues, RPC          | Event streaming, logs,    |
+|                  |                           | real-time analytics       |
++------------------+---------------------------+---------------------------+
+
+WHEN TO USE KAFKA:
+    - High volume data streams
+    - Multiple consumers need same data
+    - Need to replay/reprocess messages
+    - Event sourcing architecture
+    - Real-time analytics
+
+WHEN TO USE TRADITIONAL MQ:
+    - Complex routing logic needed
+    - Message-level acknowledgment required
+    - Request-reply patterns
+    - Lower volume, simpler use cases
+
+================================================================================
+KAFKA ARCHITECTURE OVERVIEW
+================================================================================
+
+                    +------------------------------------------+
+                    |             KAFKA CLUSTER                |
+                    |                                          |
+  +----------+      |   +--------+  +--------+  +--------+    |      +----------+
+  | Producer | ---> |   |Broker 1|  |Broker 2|  |Broker 3|    | ---> | Consumer |
+  +----------+      |   +--------+  +--------+  +--------+    |      +----------+
+                    |        |          |           |         |
+  +----------+      |        v          v           v         |      +----------+
+  | Producer | ---> |   +---------------------------------+   | ---> | Consumer |
+  +----------+      |   |           TOPICS                |   |      +----------+
+                    |   |  +-------+ +-------+ +-------+  |   |
+                    |   |  |Topic A| |Topic B| |Topic C|  |   |      +----------+
+                    |   |  +-------+ +-------+ +-------+  |   | ---> | Consumer |
+                    |   +---------------------------------+   |      +----------+
+                    |                                          |
+                    +------------------------------------------+
+
+KEY COMPONENTS:
+
+1. BROKER
+   - A single Kafka server
+   - Stores data and serves clients
+   - Multiple brokers form a cluster
+   - Each broker identified by unique ID
+
+2. TOPIC
+   - Category/feed name for messages
+   - Like a table in database or folder in filesystem
+   - Producers write to topics, consumers read from topics
+   - Example topics: "orders", "user-events", "logs"
+
+3. PARTITION
+   - Topics are split into partitions
+   - Each partition is an ordered, immutable log
+   - Enables parallelism and scalability
+   - Messages within partition have sequential ID (offset)
+
+   Topic "orders" with 3 partitions:
+
+   Partition 0: [msg0][msg1][msg2][msg3] --> offset 3
+   Partition 1: [msg0][msg1] ------------> offset 1
+   Partition 2: [msg0][msg1][msg2] ------> offset 2
+
+4. PRODUCER
+   - Application that sends messages to topics
+   - Decides which partition to send to (round-robin, key-based, custom)
+   - Can send synchronously or asynchronously
+
+5. CONSUMER
+   - Application that reads messages from topics
+   - Subscribes to one or more topics
+   - Reads from specific partitions
+   - Tracks its position (offset)
+
+6. CONSUMER GROUP
+   - Multiple consumers working together
+   - Each partition consumed by only one consumer in group
+   - Enables parallel processing and load balancing
+
+   Consumer Group "order-processors":
+
+   Partition 0 --> Consumer A
+   Partition 1 --> Consumer B
+   Partition 2 --> Consumer A  (if only 2 consumers)
+
+7. OFFSET
+   - Sequential ID for each message in a partition
+   - Consumer tracks which offset it has read
+   - Stored in internal Kafka topic (__consumer_offsets)
+   - Can be reset to replay messages
+
+8. REPLICATION
+   - Each partition has multiple copies (replicas)
+   - One replica is LEADER (handles reads/writes)
+   - Others are FOLLOWERS (sync from leader)
+   - If leader fails, follower becomes new leader
+
+   Partition 0 replicas (replication-factor=3):
+   - Broker 1: Leader
+   - Broker 2: Follower
+   - Broker 3: Follower
+
+9. CONTROLLER (KRaft Mode)
+   - Manages cluster metadata
+   - Handles leader election
+   - In KRaft mode, runs within Kafka (no Zookeeper)
+   - One broker acts as controller
+
+================================================================================
+MESSAGE FLOW
+================================================================================
+
+1. Producer sends message to topic "orders"
+2. Kafka determines partition (based on key or round-robin)
+3. Message appended to partition log on leader broker
+4. Leader replicates to followers
+5. Leader acknowledges to producer (based on acks setting)
+6. Consumer polls for new messages
+7. Consumer processes message and commits offset
+8. Message remains in Kafka until retention period expires
+
+    Producer                     Kafka                        Consumer
+       |                           |                              |
+       |-- send("orders", msg) --> |                              |
+       |                           |-- append to partition -----> |
+       |                           |-- replicate to followers     |
+       | <-------- ack ----------- |                              |
+       |                           |                              |
+       |                           | <-- poll() ----------------- |
+       |                           |-- return messages ---------> |
+       |                           |                              |
+       |                           | <-- commit offset ---------- |
+       |                           |                              |
+
+================================================================================
+KEY CONCEPTS SUMMARY
+================================================================================
+
+TOPIC       : Named stream of messages (like a category)
+PARTITION   : Ordered log within a topic (enables parallelism)
+OFFSET      : Position of message in partition (sequential ID)
+BROKER      : Single Kafka server
+CLUSTER     : Group of brokers working together
+PRODUCER    : Sends messages to topics
+CONSUMER    : Reads messages from topics
+CONSUMER GROUP : Consumers sharing work on a topic
+REPLICATION : Copies of partitions for fault tolerance
+LEADER      : Partition replica that handles all reads/writes
+FOLLOWER    : Partition replica that syncs from leader
+CONTROLLER  : Broker managing cluster metadata (KRaft mode)
+
+================================================================================
