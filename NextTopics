@@ -1,11 +1,16 @@
-Remaining Topics:
-1. Core Concepts Deep Dive - Topics, Partitions, Offsets, Segments, Replication in detail
-2. Producers - Configuration, partitioning strategies, acks, retries, idempotence
-3. Consumers - Consumer groups, offset management, rebalancing, assignment strategies
-4. Kafka Streams - Stream processing library
-5. Kafka Connect - Data integration framework
-6. KTable - Changelog streams as tables
+Kafka Learning Topics
+=====================
 
+Completed:
+[x] 1. Core Concepts Deep Dive - Topics, Partitions, Offsets, Segments, Replication in detail
 
-Kafka Lag
-Kafka Rebalance
+Pending:
+[x] 2. Producers - Configuration, partitioning strategies, acks, retries, idempotence
+[ ] 3. Consumers - Consumer groups, offset management, rebalancing, assignment strategies
+[ ] 4. Kafka Rebalance
+[ ] 5. Kafka Lag
+[ ] 6. Rate limiting - Producer and consumer throttling
+[ ] 7. Kafka Streams - Stream processing library
+[ ] 8. KTable - Changelog streams as tables
+[ ] 9. Kafka Connect - Data integration framework
+[ ] 10. Kafka with Spring Boot - Spring Kafka, configuration, templates, listeners
