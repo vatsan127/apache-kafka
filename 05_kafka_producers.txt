@@ -1,0 +1,697 @@
+================================================================================
+                            KAFKA PRODUCERS
+================================================================================
+
+================================================================================
+1. WHAT IS A KAFKA PRODUCER?
+================================================================================
+
+DEFINITION:
+    - Client application that publishes (writes) messages to Kafka topics
+    - Responsible for choosing which partition to send records to
+    - Handles serialization, batching, compression, and retries
+
+PRODUCER RESPONSIBILITIES:
+    1. Serialize data (key and value) to bytes
+    2. Determine target partition
+    3. Batch messages for efficiency
+    4. Compress data (optional)
+    5. Send to correct broker (partition leader)
+    6. Handle failures and retries
+    7. Track acknowledgments
+
+================================================================================
+2. PRODUCER ARCHITECTURE
+================================================================================
+
+    APPLICATION CODE
+          |
+          | ProducerRecord(topic, key, value)
+          v
+    +------------------------------------------------------------------+
+    |                      KAFKA PRODUCER                               |
+    |                                                                   |
+    |  +------------------+    +------------------+    +--------------+ |
+    |  |   Serializer     |    |   Partitioner    |    |  Interceptor | |
+    |  | (Key & Value)    |    | (Target Partition)|   |  (Optional)  | |
+    |  +--------+---------+    +--------+---------+    +--------------+ |
+    |           |                       |                               |
+    |           v                       v                               |
+    |  +------------------------------------------------------------+   |
+    |  |                    RECORD ACCUMULATOR                       |  |
+    |  |  +----------+  +----------+  +----------+  +----------+     |  |
+    |  |  | Batch    |  | Batch    |  | Batch    |  | Batch    |     |  |
+    |  |  | Topic-P0 |  | Topic-P1 |  | Topic-P2 |  | Topic-P3 |     |  |
+    |  |  +----------+  +----------+  +----------+  +----------+     |  |
+    |  +------------------------------------------------------------+   |
+    |           |                                                       |
+    |           v                                                       |
+    |  +------------------------------------------------------------+   |
+    |  |                      SENDER THREAD                          |  |
+    |  |  - Picks batches ready to send                              |  |
+    |  |  - Groups by broker (Node)                                  |  |
+    |  |  - Creates produce requests                                 |  |
+    |  +------------------------------------------------------------+   |
+    |           |                                                       |
+    +-----------|-------------------------------------------------------+
+                |
+                v
+    +------------------------------------------------------------------+
+    |                      KAFKA CLUSTER                                |
+    |   Broker 1          Broker 2          Broker 3                    |
+    |   [P0 Leader]       [P1 Leader]       [P2 Leader]                 |
+    +------------------------------------------------------------------+
+
+PRODUCER FLOW:
+    1. Application creates ProducerRecord (topic, key, value)
+    2. Serializers convert key/value to bytes
+    3. Partitioner determines target partition
+    4. Record added to batch in Record Accumulator
+    5. Sender thread sends batch when ready (size/time trigger)
+    6. Broker receives, writes to log, sends acknowledgment
+    7. Producer receives ack or handles failure
+
+================================================================================
+3. PRODUCER RECORD STRUCTURE
+================================================================================
+
+PRODUCER RECORD COMPONENTS:
+
+    +------------------------------------------------------------------+
+    |                      PRODUCER RECORD                              |
+    +------------------------------------------------------------------+
+    | Topic (required)     | Name of topic to send to                   |
+    | Key (optional)       | Used for partitioning, can be null         |
+    | Value (required)     | The actual message data                    |
+    | Partition (optional) | Explicit partition number                  |
+    | Timestamp (optional) | Message timestamp                          |
+    | Headers (optional)   | Key-value metadata pairs                   |
+    +------------------------------------------------------------------+
+
+RECORD VARIATIONS:
+
+    1. Value only (null key):
+       Topic: "orders"
+       Key: null
+       Value: "order-data"
+       → Uses sticky partitioner (batches to one partition)
+
+    2. Key + Value:
+       Topic: "orders"
+       Key: "user-123"
+       Value: "order-data"
+       → hash(key) determines partition (same key = same partition)
+
+    3. Explicit partition:
+       Topic: "orders"
+       Partition: 2
+       Key: "user-123"
+       Value: "order-data"
+       → Always goes to partition 2 (ignores key for partitioning)
+
+================================================================================
+4. CLI PRODUCER COMMANDS
+================================================================================
+
+BASIC PRODUCER:
+
+    # Start producer (type messages, Enter to send)
+    kafka-console-producer.sh \
+        --bootstrap-server localhost:9092 \
+        --topic my-topic
+
+    # Input:
+    > Hello World
+    > Another message
+
+PRODUCER WITH KEY:
+
+    kafka-console-producer.sh \
+        --bootstrap-server localhost:9092 \
+        --topic my-topic \
+        --property "parse.key=true" \
+        --property "key.separator=:"
+
+    # Input:
+    > user-123:Order placed
+    > user-456:Order shipped
+    > user-123:Order delivered    (same partition as first message)
+
+PRODUCER WITH CUSTOM CONFIGURATIONS:
+
+    kafka-console-producer.sh \
+        --bootstrap-server localhost:9092 \
+        --topic my-topic \
+        --producer-property acks=all \
+        --producer-property retries=3 \
+        --producer-property linger.ms=10
+
+PRODUCER WITH COMPRESSION:
+
+    kafka-console-producer.sh \
+        --bootstrap-server localhost:9092 \
+        --topic my-topic \
+        --compression-codec lz4
+
+PRODUCER FROM FILE:
+
+    # Send each line as a message
+    kafka-console-producer.sh \
+        --bootstrap-server localhost:9092 \
+        --topic my-topic < messages.txt
+
+================================================================================
+5. KEY PRODUCER CONFIGURATIONS
+================================================================================
+
+BATCHING & BUFFERING:
++---------------------------+------------------+--------------------------------+
+| Property                  | Default          | Description                    |
++---------------------------+------------------+--------------------------------+
+| batch.size                | 16384 (16KB)     | Max bytes per batch            |
+| linger.ms                 | 0                | Wait time to fill batch        |
+| buffer.memory             | 33554432 (32MB)  | Total memory for buffering     |
+| max.block.ms              | 60000 (60s)      | Block time when buffer full    |
++---------------------------+------------------+--------------------------------+
+
+    Batching Behavior:
+
+    linger.ms=0 (default):
+    ┌───────┐
+    │ msg1  │ ──► send immediately
+    └───────┘
+    ┌───────┐
+    │ msg2  │ ──► send immediately
+    └───────┘
+
+    linger.ms=5:
+    ┌───────┬───────┬───────┐
+    │ msg1  │ msg2  │ msg3  │ ──► wait 5ms, send batch
+    └───────┴───────┴───────┘
+
+    Trade-off:
+    - linger.ms=0    : Lower latency, more requests
+    - linger.ms>0    : Higher throughput, slightly higher latency
+
+COMPRESSION:
++---------------------------+------------------+--------------------------------+
+| Property                  | Default          | Description                    |
++---------------------------+------------------+--------------------------------+
+| compression.type          | none             | none, gzip, snappy, lz4, zstd  |
++---------------------------+------------------+--------------------------------+
+
+    Compression Comparison:
+    +----------+-------------+-------------------+------------------+
+    | Type     | CPU Usage   | Compression Ratio | Speed            |
+    +----------+-------------+-------------------+------------------+
+    | none     | None        | 1:1               | Fastest          |
+    | snappy   | Low         | Good              | Fast             |
+    | lz4      | Low         | Good              | Very Fast        |
+    | gzip     | High        | Best              | Slow             |
+    | zstd     | Medium      | Best              | Fast             |
+    +----------+-------------+-------------------+------------------+
+
+    Recommendation:
+    - High throughput, low CPU: lz4 or snappy
+    - Best compression: zstd (balanced) or gzip (max compression)
+
+================================================================================
+6. PARTITIONING STRATEGIES
+================================================================================
+
+HOW PARTITIONER WORKS:
+
+    ProducerRecord
+          │
+          ▼
+    ┌─────────────────────┐
+    │ Partition specified?│───► YES ───► Use specified partition
+    └─────────────────────┘
+          │ NO
+          ▼
+    ┌─────────────────────┐
+    │ Key is null?        │───► YES ───► Sticky Partitioner
+    └─────────────────────┘              (batch to one partition)
+          │ NO
+          ▼
+    ┌─────────────────────┐
+    │ hash(key) % numParts│ ───► Consistent partition for same key
+    └─────────────────────┘
+
+1. EXPLICIT PARTITION:
+    - Specify partition number directly
+    - Ignores key for partition selection
+    - Use case: Custom routing logic
+
+2. KEY-BASED PARTITIONING (Default when key present):
+    - hash(key) % num_partitions = target partition
+    - Same key ALWAYS goes to same partition
+    - Guarantees ordering for same key
+
+    Example:
+    key="user-123" ───► hash ───► partition 1
+    key="user-456" ───► hash ───► partition 0
+    key="user-123" ───► hash ───► partition 1 (same!)
+
+    Use case: All events for same user/order in same partition
+
+3. STICKY PARTITIONER (Default when key is null, Kafka 2.4+):
+    - Batches messages to single partition until batch full
+    - Then switches to another partition
+    - Better batching than pure round-robin
+
+    Before (Round-Robin):
+    msg1 → P0, msg2 → P1, msg3 → P2, msg4 → P0  (small batches)
+
+    After (Sticky):
+    msg1, msg2, msg3, msg4 → P0 (full batch), then switch to P1
+
+4. CUSTOM PARTITIONER:
+    - Implement custom logic (e.g., route by region, priority)
+    - Configure: partitioner.class=com.example.CustomPartitioner
+
+    Example logic:
+    - Keys starting with "US-" → partition 0
+    - Keys starting with "EU-" → partition 1
+    - Others → partition 2
+
+================================================================================
+7. ACKNOWLEDGMENTS (acks)
+================================================================================
+
+WHAT IS ACKS?
+    - Controls durability guarantee for produced messages
+    - Trade-off between durability and latency/throughput
+
+ACKS VALUES:
+
+    acks=0 (Fire and Forget)
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   Producer ────► Broker (Leader)                                    │
+    │      │                                                              │
+    │      └── No wait for response                                       │
+    │      └── Fastest, but may lose messages                             │
+    │      └── Use case: Metrics, logs where some loss is acceptable      │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    acks=1 (Leader Acknowledgment)
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   Producer ────► Broker (Leader) ────► ACK back to Producer         │
+    │                       │                                             │
+    │                       X (Followers may not have it yet)             │
+    │                                                                     │
+    │      └── Wait for leader to write to local log                      │
+    │      └── Good balance of durability and performance                 │
+    │      └── Data loss if leader fails before replication               │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    acks=all (or -1) (Full Replication)
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   Producer ────► Leader ────► Followers (ISR) ────► ACK to Producer │
+    │                                                                     │
+    │      └── Wait for ALL in-sync replicas to acknowledge               │
+    │      └── Strongest durability guarantee                             │
+    │      └── Highest latency                                            │
+    │      └── Requires min.insync.replicas configuration                 │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+ACKS COMPARISON:
++----------+-------------+------------------+------------------+----------------+
+| acks     | Durability  | Latency          | Throughput       | Data Loss Risk |
++----------+-------------+------------------+------------------+----------------+
+| 0        | None        | Lowest           | Highest          | High           |
+| 1        | Medium      | Medium           | Medium           | Medium         |
+| all/-1   | Highest     | Highest          | Lowest           | Lowest         |
++----------+-------------+------------------+------------------+----------------+
+
+RECOMMENDED SETTINGS:
+
+    High durability (financial, critical data):
+        acks=all
+        min.insync.replicas=2  (broker config)
+
+    Balanced (most applications):
+        acks=1
+
+    High throughput (logs, metrics):
+        acks=0
+
+================================================================================
+8. RETRIES AND ERROR HANDLING
+================================================================================
+
+RETRY CONFIGURATION:
++---------------------------+------------------+--------------------------------+
+| Property                  | Default          | Description                    |
++---------------------------+------------------+--------------------------------+
+| retries                   | 2147483647       | Max retry attempts             |
+| retry.backoff.ms          | 100              | Wait between retries           |
+| delivery.timeout.ms       | 120000 (2min)    | Total time for send + retries  |
++---------------------------+------------------+--------------------------------+
+
+RETRY FLOW:
+
+    Send Attempt
+         │
+         ▼
+    ┌────────────────┐
+    │ Success?       │───► YES ───► Done (success callback)
+    └────────────────┘
+         │ NO
+         ▼
+    ┌────────────────┐
+    │ Retriable      │───► NO ───► Fail immediately
+    │ Error?         │            (error callback)
+    └────────────────┘
+         │ YES
+         ▼
+    ┌────────────────┐
+    │ Within         │───► NO ───► Fail (delivery.timeout.ms exceeded)
+    │ timeout?       │
+    └────────────────┘
+         │ YES
+         ▼
+    Wait retry.backoff.ms
+         │
+         ▼
+    Retry send...
+
+RETRIABLE VS NON-RETRIABLE ERRORS:
+
+    Retriable (will retry automatically):
+    - NetworkException
+    - LeaderNotAvailableException
+    - NotEnoughReplicasException
+    - TimeoutException
+
+    Non-Retriable (fail immediately):
+    - SerializationException
+    - RecordTooLargeException
+    - InvalidTopicException
+    - AuthorizationException
+
+MESSAGE ORDERING WITH RETRIES:
+
+    Problem: Out-of-order delivery with retries
+
+    max.in.flight.requests.per.connection=5 (default)
+
+    Batch 1 sent ───► FAILS (will retry)
+    Batch 2 sent ───► SUCCESS
+    Batch 1 retry ──► SUCCESS
+
+    Result: Batch 2 before Batch 1 (out of order!)
+
+    Solution 1: Limit in-flight requests
+        max.in.flight.requests.per.connection=1
+        (Only 1 request at a time, strict ordering, lower throughput)
+
+    Solution 2: Enable idempotence (recommended)
+        enable.idempotence=true
+        (Handles ordering automatically, see next section)
+
+================================================================================
+9. IDEMPOTENT PRODUCER
+================================================================================
+
+WHAT IS IDEMPOTENCE?
+    - Exactly-once delivery semantics within a partition
+    - Prevents duplicates from retries
+    - Guarantees ordering even with retries
+
+THE DUPLICATE PROBLEM:
+
+    Without Idempotence:
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   Producer ──► send msg ──► Broker writes msg ──► ACK lost          │
+    │       │                                                             │
+    │       └──► timeout, retry ──► Broker writes msg AGAIN (DUPLICATE!)  │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+HOW IDEMPOTENCE WORKS:
+
+    Producer assigns:
+    - Producer ID (PID): Unique ID for producer instance
+    - Sequence Number: Incrementing number per partition
+
+    ┌─────────────────────┐
+    │ Message             │
+    │ PID: 1000           │
+    │ Sequence: 5         │
+    │ Partition: 0        │
+    │ Data: "hello"       │
+    └──────────┬──────────┘
+               │
+               ▼
+    ┌─────────────────────┐
+    │ Broker checks:      │
+    │ Last seq for PID    │
+    │ 1000, P0 was 4      │
+    │ New seq is 5        │
+    │ 5 = 4 + 1? YES      │
+    │ ──► Accept          │
+    └─────────────────────┘
+
+    Duplicate arrives (seq=5 again):
+    ┌─────────────────────┐
+    │ Broker checks:      │
+    │ Last seq was 5      │
+    │ New seq is 5        │
+    │ 5 = 5 + 1? NO       │
+    │ ──► Reject duplicate│
+    └─────────────────────┘
+
+ENABLING IDEMPOTENCE:
+
+    enable.idempotence=true
+
+    Automatically sets:
+        acks=all
+        retries=Integer.MAX_VALUE
+        max.in.flight.requests.per.connection=5 (safe with idempotence)
+
+IDEMPOTENCE REQUIREMENTS:
+    - acks must be "all"
+    - retries must be > 0
+    - max.in.flight.requests.per.connection <= 5
+
+IDEMPOTENCE LIMITATIONS:
+    - Only within single producer session (PID changes on restart)
+    - Only within single partition
+    - For cross-partition exactly-once, use Transactions
+
+================================================================================
+10. SEND MODES
+================================================================================
+
+THREE WAYS TO SEND MESSAGES:
+
+1. FIRE AND FORGET:
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Producer sends message, doesn't wait for response                  │
+    │                                                                     │
+    │  Pros: Maximum throughput                                           │
+    │  Cons: No error handling, may lose messages silently                │
+    │  Use case: Non-critical data, metrics                               │
+    └─────────────────────────────────────────────────────────────────────┘
+
+2. SYNCHRONOUS SEND:
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Producer sends message, BLOCKS until response received             │
+    │                                                                     │
+    │  Flow: Send ──► Wait ──► Receive ACK ──► Continue                   │
+    │                                                                     │
+    │  Pros: Simple error handling, know result immediately               │
+    │  Cons: Slow (waits for each message)                                │
+    │  Use case: Critical messages, low-volume producers                  │
+    └─────────────────────────────────────────────────────────────────────┘
+
+3. ASYNCHRONOUS SEND (with Callback):
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Producer sends message, continues immediately                      │
+    │  Callback function invoked when response arrives                    │
+    │                                                                     │
+    │  Flow: Send ──► Continue working ──► Callback fires on ACK/Error    │
+    │                                                                     │
+    │  Pros: High throughput, non-blocking, still has error handling      │
+    │  Cons: More complex, callback executes on different thread          │
+    │  Use case: High-throughput applications                             │
+    └─────────────────────────────────────────────────────────────────────┘
+
+CALLBACK EXECUTION ORDER:
+    - Callbacks for same partition execute in order
+    - Callbacks for different partitions may be out of order
+
+================================================================================
+11. PRODUCER INTERCEPTORS
+================================================================================
+
+WHAT ARE INTERCEPTORS?
+    - Hooks to inspect/modify records before sending
+    - Can add headers, log, collect metrics, etc.
+    - Chain multiple interceptors (execute in order)
+
+INTERCEPTOR METHODS:
+
+    onSend():
+        - Called before serialization
+        - Can modify record (add headers, transform data)
+        - Return modified record
+
+    onAcknowledgement():
+        - Called after broker ack (success or failure)
+        - Used for logging, metrics collection
+        - Cannot modify record
+
+USE CASES:
+    - Add tracing headers (correlation ID, timestamp)
+    - Log all outgoing messages
+    - Collect metrics (success/failure rates)
+    - Transform or enrich data
+
+CONFIGURATION:
+    interceptor.classes=com.example.LoggingInterceptor,com.example.MetricsInterceptor
+
+    (Multiple interceptors comma-separated, execute in order)
+
+================================================================================
+12. PRODUCER BEST PRACTICES
+================================================================================
+
+1. REUSE PRODUCER INSTANCES:
+    - Creating producer per message is expensive
+    - Create once, reuse for all messages
+    - Producer is thread-safe
+
+2. ALWAYS CLOSE THE PRODUCER:
+    - Flushes pending messages
+    - Releases resources (connections, threads)
+
+3. USE CALLBACKS FOR ERROR HANDLING:
+    - Don't ignore failures
+    - Log errors, alert, or send to dead letter queue
+
+4. CONFIGURE FOR YOUR USE CASE:
+
+    High Throughput Configuration:
+    +--------------------------------+------------------+
+    | batch.size                     | 65536 (64KB)     |
+    | linger.ms                      | 10-100           |
+    | compression.type               | lz4              |
+    | acks                           | 1                |
+    | buffer.memory                  | 67108864 (64MB)  |
+    +--------------------------------+------------------+
+
+    High Durability Configuration:
+    +--------------------------------+------------------+
+    | acks                           | all              |
+    | enable.idempotence             | true             |
+    | retries                        | MAX_INT          |
+    | max.in.flight.requests         | 5                |
+    +--------------------------------+------------------+
+
+    Low Latency Configuration:
+    +--------------------------------+------------------+
+    | linger.ms                      | 0                |
+    | batch.size                     | 16384            |
+    | acks                           | 1                |
+    +--------------------------------+------------------+
+
+5. HANDLE BUFFER FULL:
+    - buffer.memory limits total producer memory
+    - max.block.ms controls how long to wait when full
+    - Monitor buffer-available-bytes metric
+
+6. MONITOR PRODUCER METRICS:
+    - record-send-rate          : Messages sent per second
+    - record-error-rate         : Failed sends per second
+    - request-latency-avg       : Average request time
+    - batch-size-avg            : Average batch size
+    - buffer-available-bytes    : Free buffer memory
+
+================================================================================
+13. COMMON PRODUCER PATTERNS
+================================================================================
+
+PATTERN 1: ORDERED MESSAGES FOR ENTITY
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Use entity ID as key to ensure ordering                            │
+    │                                                                     │
+    │  key="customer-123" ──► All messages go to same partition           │
+    │  key="customer-123" ──► Maintains order for this customer           │
+    │  key="customer-456" ──► Different partition, different customer     │
+    │                                                                     │
+    │  Use case: Order events, user activity tracking                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+PATTERN 2: DEAD LETTER QUEUE (DLQ)
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  On send failure, route message to DLQ topic                        │
+    │                                                                     │
+    │  Send to "orders" ──► FAIL ──► Send to "orders-dlq"                 │
+    │                                                                     │
+    │  Later: Process DLQ manually or with retry logic                    │
+    │                                                                     │
+    │  Use case: Ensure no message is lost, debug failures                │
+    └─────────────────────────────────────────────────────────────────────┘
+
+PATTERN 3: REQUEST-REPLY
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Producer sends request with correlation ID                         │
+    │  Consumer sends response to reply topic with same correlation ID    │
+    │                                                                     │
+    │  Request:                                                           │
+    │    Topic: "requests"                                                │
+    │    Header: correlation-id = "abc-123"                               │
+    │    Value: request data                                              │
+    │                                                                     │
+    │  Response:                                                          │
+    │    Topic: "responses"                                               │
+    │    Header: correlation-id = "abc-123"                               │
+    │    Value: response data                                             │
+    │                                                                     │
+    │  Use case: Synchronous-style communication over Kafka               │
+    └─────────────────────────────────────────────────────────────────────┘
+
+PATTERN 4: BATCH FLUSH
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  Send many messages asynchronously, then flush before proceeding    │
+    │                                                                     │
+    │  Send msg1 (async)                                                  │
+    │  Send msg2 (async)                                                  │
+    │  Send msg3 (async)                                                  │
+    │  ...                                                                │
+    │  Flush (blocks until all sent)                                      │
+    │  Continue with next operation                                       │
+    │                                                                     │
+    │  Use case: Batch processing, ensuring all messages sent             │
+    └─────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+QUICK REFERENCE: PRODUCER CONFIGURATION
+================================================================================
+
++--------------------------------+------------------+---------------------------+
+| Configuration                  | Default          | Recommended For           |
++--------------------------------+------------------+---------------------------+
+| acks                           | all (Kafka 3.0+) | all (durability)          |
+| batch.size                     | 16384            | 65536 (throughput)        |
+| linger.ms                      | 0                | 5-100 (throughput)        |
+| compression.type               | none             | lz4/zstd (throughput)     |
+| retries                        | MAX_INT          | MAX_INT                   |
+| enable.idempotence             | true (Kafka 3.0+)| true                      |
+| max.in.flight.requests         | 5                | 5 (with idempotence)      |
+| buffer.memory                  | 32MB             | 64MB (high throughput)    |
+| request.timeout.ms             | 30000            | 30000                     |
+| delivery.timeout.ms            | 120000           | 120000                    |
++--------------------------------+------------------+---------------------------+
+
+================================================================================
