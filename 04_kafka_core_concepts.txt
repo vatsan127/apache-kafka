@@ -48,7 +48,7 @@ CREATE TOPIC COMMAND:
 TOPIC CONFIGURATION:
     retention.ms            : How long to keep messages (default: 7 days)
     retention.bytes         : Max size per partition (default: unlimited)
-    cleanup.policy          : delete or compact
+    cleanup.policy          : delete or compact (default: delete)
     max.message.bytes       : Max message size (default: 1MB)
     min.insync.replicas     : Min replicas that must ack (for durability)
 
@@ -57,10 +57,16 @@ TOPIC CONFIGURATION:
             --topic order-events \
             --bootstrap-server localhost:9092
 
-    Alter config:
+    Alter config (add/update):
         kafka-configs.sh --alter \
             --topic order-events \
             --add-config retention.ms=86400000 \
+            --bootstrap-server localhost:9092
+
+    Remove config (revert to default):
+        kafka-configs.sh --alter \
+            --topic order-events \
+            --delete-config retention.ms \
             --bootstrap-server localhost:9092
 
 ================================================================================
@@ -518,8 +524,17 @@ CONTROLLER (KRaft Mode):
 BROKER CONFIGURATION (key settings):
 
     broker.id=1                           # Unique ID
-    listeners=PLAINTEXT://:9092           # How clients connect
+    listeners=PLAINTEXT://:9092           # Interfaces broker binds to (server-side)
+    advertised.listeners=PLAINTEXT://localhost:9092  # Address sent to clients for connection
     log.dirs=/opt/kafka/kraft-combined-logs  # Data directory
+
+    # listeners vs advertised.listeners:
+    #   listeners          → What broker listens on (0.0.0.0:9092 or specific IP)
+    #   advertised.listeners → What clients use to connect (hostname/IP clients can reach)
+    #
+    #   Example (Docker/Cloud):
+    #     listeners=PLAINTEXT://0.0.0.0:9092
+    #     advertised.listeners=PLAINTEXT://kafka.example.com:9092
     num.partitions=1                      # Default partitions for new topics
     default.replication.factor=1          # Default RF for new topics
     min.insync.replicas=1                 # Min ISR for acks=all

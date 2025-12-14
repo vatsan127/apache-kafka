@@ -1,0 +1,626 @@
+================================================================================
+                              KAFKA STREAMS
+================================================================================
+
+================================================================================
+1. WHAT IS KAFKA STREAMS?
+================================================================================
+
+DEFINITION:
+    - Client library for building stream processing applications
+    - Processes data stored in Kafka topics
+    - Part of Apache Kafka (no separate cluster needed)
+    - Runs as a standard Java/Scala application
+
+KEY CHARACTERISTICS:
+    - No separate processing cluster (unlike Spark, Flink)
+    - Exactly-once processing semantics
+    - One record at a time processing (true streaming)
+    - Fault-tolerant with automatic recovery
+    - Horizontally scalable (add more instances)
+    - Stateful and stateless operations
+
+KAFKA STREAMS vs OTHER FRAMEWORKS:
+
+    +-------------------+------------------+------------------+----------------+
+    | Feature           | Kafka Streams    | Apache Flink     | Apache Spark   |
+    +-------------------+------------------+------------------+----------------+
+    | Deployment        | Library (embed)  | Separate cluster | Separate cluster|
+    | Processing Model  | Per-record       | Per-record       | Micro-batch    |
+    | Latency           | Milliseconds     | Milliseconds     | Seconds        |
+    | State Management  | Built-in (RocksDB)| Built-in        | External       |
+    | Exactly-Once      | Yes              | Yes              | Yes            |
+    | Learning Curve    | Low              | Medium           | Medium         |
+    +-------------------+------------------+------------------+----------------+
+
+USE CASES:
+    - Real-time analytics and monitoring
+    - Event-driven microservices
+    - Data transformation and enrichment
+    - Fraud detection
+    - Log processing
+    - IoT data processing
+    - Real-time recommendations
+
+================================================================================
+2. CORE ABSTRACTIONS
+================================================================================
+
+KSTREAM (Event Stream):
+    - Unbounded, continuously updating stream of records
+    - Each record is an independent event
+    - INSERT semantics (every record is a new event)
+    - Represents facts/events that happened
+
+    Example: User clicks, transactions, sensor readings
+
+    Topic Data:
+        key=user1, value=click_page_A, time=T1
+        key=user1, value=click_page_B, time=T2
+        key=user1, value=click_page_A, time=T3
+
+    KStream sees: 3 separate events (all retained)
+
+KTABLE (Changelog Stream):
+    - Table-like view of stream data
+    - Each record is an UPDATE to a key
+    - UPSERT semantics (latest value per key)
+    - Represents current state
+
+    Example: User profiles, account balances, inventory levels
+
+    Topic Data:
+        key=user1, value=balance_100, time=T1
+        key=user1, value=balance_150, time=T2
+        key=user1, value=balance_120, time=T3
+
+    KTable sees: 1 record (user1 → balance_120, latest only)
+
+GLOBALKTABLE:
+    - Fully replicated table on every instance
+    - All partitions available locally
+    - Used for lookup/reference data (small datasets)
+    - No co-partitioning required for joins
+
+    Example: Country codes, product catalog, config data
+
+COMPARISON:
+
+    +----------------+-------------------+-------------------+------------------+
+    | Aspect         | KStream           | KTable            | GlobalKTable     |
+    +----------------+-------------------+-------------------+------------------+
+    | Semantics      | Insert (event)    | Upsert (state)    | Upsert (state)   |
+    | Per Key        | All records       | Latest record     | Latest record    |
+    | Partitioned    | Yes               | Yes               | No (full copy)   |
+    | Use For        | Events/facts      | Current state     | Lookup data      |
+    | Size           | Unbounded         | Keys × 1 value    | Small datasets   |
+    +----------------+-------------------+-------------------+------------------+
+
+================================================================================
+3. STREAM PROCESSING TOPOLOGY
+================================================================================
+
+WHAT IS A TOPOLOGY?
+    - Directed acyclic graph (DAG) of stream processors
+    - Defines how data flows and transforms
+    - Built using DSL or Processor API
+
+TOPOLOGY COMPONENTS:
+
+    1. Source Processor:
+       - Reads from Kafka topic(s)
+       - Entry point of topology
+       - No upstream processor
+
+    2. Stream Processor:
+       - Performs transformations
+       - Receives records from upstream
+       - Sends records downstream
+       - Can be stateless or stateful
+
+    3. Sink Processor:
+       - Writes to Kafka topic(s)
+       - Exit point of topology
+       - No downstream processor
+
+EXAMPLE TOPOLOGY:
+
+    ┌─────────────┐
+    │ Source      │ ←── reads from "orders" topic
+    │ (orders)    │
+    └──────┬──────┘
+           │
+           ▼
+    ┌─────────────┐
+    │ Filter      │ ←── filter orders > $100
+    │             │
+    └──────┬──────┘
+           │
+           ▼
+    ┌─────────────┐
+    │ Map         │ ←── transform to new format
+    │             │
+    └──────┬──────┘
+           │
+           ▼
+    ┌─────────────┐
+    │ Sink        │ ←── writes to "large-orders" topic
+    │(large-orders│
+    └─────────────┘
+
+================================================================================
+4. STATELESS OPERATIONS
+================================================================================
+
+Operations that process each record independently (no memory of past records).
+
+FILTER:
+    - Keep records matching condition
+    - Remove records not matching
+
+    stream.filter((key, value) -> value.getAmount() > 100)
+
+    Input:  [order1:$50] [order2:$150] [order3:$80] [order4:$200]
+    Output:             [order2:$150]              [order4:$200]
+
+MAP:
+    - Transform key and/or value
+    - One-to-one transformation
+
+    stream.map((key, value) -> KeyValue.pair(key.toUpperCase(), value * 2))
+
+    Input:  [a:10] [b:20] [c:30]
+    Output: [A:20] [B:40] [C:60]
+
+MAPVALUES:
+    - Transform only value (key unchanged)
+    - More efficient than map (no repartitioning)
+
+    stream.mapValues(value -> value.toUpperCase())
+
+    Input:  [user1:hello] [user2:world]
+    Output: [user1:HELLO] [user2:WORLD]
+
+FLATMAP:
+    - One-to-many transformation
+    - Each input record can produce 0, 1, or more output records
+
+    stream.flatMap((key, value) -> {
+        List<KeyValue<String, String>> result = new ArrayList<>();
+        for (String word : value.split(" ")) {
+            result.add(KeyValue.pair(key, word));
+        }
+        return result;
+    })
+
+    Input:  [doc1:"hello world"]
+    Output: [doc1:hello] [doc1:world]
+
+FLATMAPVALUES:
+    - FlatMap on values only (key unchanged)
+
+    stream.flatMapValues(value -> Arrays.asList(value.split(" ")))
+
+    Input:  [doc1:"hello world"]
+    Output: [doc1:hello] [doc1:world]
+
+SELECTKEY:
+    - Change the key
+    - Triggers repartitioning
+
+    stream.selectKey((key, value) -> value.getUserId())
+
+BRANCH:
+    - Split stream into multiple streams based on predicates
+
+    KStream<String, Order>[] branches = stream.branch(
+        (key, order) -> order.getType().equals("FOOD"),
+        (key, order) -> order.getType().equals("ELECTRONICS"),
+        (key, order) -> true  // default branch
+    );
+    KStream<String, Order> foodOrders = branches[0];
+    KStream<String, Order> electronicsOrders = branches[1];
+    KStream<String, Order> otherOrders = branches[2];
+
+MERGE:
+    - Combine multiple streams into one
+
+    KStream<String, Order> merged = foodOrders.merge(electronicsOrders);
+
+PEEK:
+    - Inspect records without modifying (for debugging/logging)
+
+    stream.peek((key, value) -> System.out.println("Processing: " + key))
+
+FOREACH:
+    - Terminal operation (no output stream)
+    - Side effects only (write to DB, send alert, etc.)
+
+    stream.foreach((key, value) -> database.save(key, value))
+
+================================================================================
+5. STATEFUL OPERATIONS
+================================================================================
+
+Operations that maintain state across records.
+
+AGGREGATIONS:
+
+    Count:
+        stream.groupByKey()
+              .count()
+
+        Input:  [user1:click] [user2:click] [user1:click] [user1:click]
+        Output: KTable { user1: 3, user2: 1 }
+
+    Reduce:
+        stream.groupByKey()
+              .reduce((value1, value2) -> value1 + value2)
+
+        Input:  [user1:10] [user2:20] [user1:5] [user1:3]
+        Output: KTable { user1: 18, user2: 20 }
+
+    Aggregate:
+        stream.groupByKey()
+              .aggregate(
+                  () -> 0L,                                    // initializer
+                  (key, value, aggregate) -> aggregate + value // aggregator
+              )
+
+GROUPING:
+
+    GroupByKey (preserves partitioning):
+        stream.groupByKey()
+
+    GroupBy (re-keys, triggers repartitioning):
+        stream.groupBy((key, value) -> value.getCategory())
+
+JOINS:
+
+    KStream-KStream Join (windowed):
+        - Both sides are event streams
+        - Must specify time window
+        - Produces new events
+
+        ordersStream.join(
+            paymentsStream,
+            (order, payment) -> new OrderPayment(order, payment),
+            JoinWindows.of(Duration.ofMinutes(5))
+        )
+
+    KStream-KTable Join:
+        - Stream events enriched with table state
+        - No window needed (table is current state)
+        - Table side must be co-partitioned
+
+        ordersStream.join(
+            customersTable,
+            (order, customer) -> order.withCustomerName(customer.getName())
+        )
+
+    KStream-GlobalKTable Join:
+        - No co-partitioning required
+        - GlobalKTable replicated everywhere
+        - Great for reference data lookups
+
+        ordersStream.join(
+            productsGlobalTable,
+            (orderId, order) -> order.getProductId(),  // key mapper
+            (order, product) -> order.withProductName(product.getName())
+        )
+
+    KTable-KTable Join:
+        - Join two tables
+        - Result is a table
+        - Updates when either side changes
+
+        customersTable.join(
+            addressesTable,
+            (customer, address) -> customer.withAddress(address)
+        )
+
+JOIN TYPES:
+    +-------------+---------------------------+---------------------------+
+    | Type        | Left Record               | Right Record              |
+    +-------------+---------------------------+---------------------------+
+    | Inner Join  | Required                  | Required                  |
+    | Left Join   | Required                  | Optional (null if missing)|
+    | Outer Join  | Optional (null if missing)| Optional (null if missing)|
+    +-------------+---------------------------+---------------------------+
+
+================================================================================
+6. WINDOWING
+================================================================================
+
+Windows group records by time for aggregations.
+
+TUMBLING WINDOWS:
+    - Fixed-size, non-overlapping
+    - Each record belongs to exactly one window
+
+    TimeWindows.of(Duration.ofMinutes(5))
+
+    |----window1----|----window2----|----window3----|
+    0              5               10              15  (minutes)
+
+    Example: Count orders every 5 minutes
+
+SESSION WINDOWS:
+    - Dynamic size based on activity
+    - Gap of inactivity closes window
+    - Groups bursts of activity
+
+    SessionWindows.with(Duration.ofMinutes(5))  // 5 min inactivity gap
+
+    Activity:  * * *         * *              * * * *
+    Windows:   |-----|       |--|             |------|
+               session1     session2          session3
+
+    Example: User sessions (group clicks until 5 min idle)
+
+HOPPING WINDOWS:
+    - Fixed-size, overlapping
+    - Advance by smaller interval than window size
+    - One record can belong to multiple windows
+
+    TimeWindows.of(Duration.ofMinutes(5))
+               .advanceBy(Duration.ofMinutes(1))
+
+    |--------window1--------|
+         |--------window2--------|
+              |--------window3--------|
+    0    1    2    3    4    5    6    7  (minutes)
+
+    Example: Moving average (5-min window, updated every minute)
+
+SLIDING WINDOWS (for joins):
+    - Used in stream-stream joins
+    - Defines how far apart in time records can be joined
+
+    JoinWindows.of(Duration.ofMinutes(5))
+
+GRACE PERIOD:
+    - Allow late-arriving records
+    - Records arriving within grace period still processed
+
+    TimeWindows.of(Duration.ofMinutes(5))
+               .grace(Duration.ofMinutes(1))
+
+================================================================================
+7. STATE STORES
+================================================================================
+
+WHERE IS STATE STORED?
+
+    Local State Store:
+        - RocksDB (default) - embedded key-value database
+        - Stored on local disk
+        - Fast read/write access
+        - Automatically created for stateful operations
+
+    Changelog Topic:
+        - Kafka topic backing the state store
+        - Every state change written to changelog
+        - Used for fault tolerance and recovery
+        - Compacted topic (keeps latest per key)
+
+STATE STORE ARCHITECTURE:
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    Kafka Streams App                         │
+    │                                                              │
+    │  ┌──────────────┐         ┌──────────────────────────────┐  │
+    │  │ Processor    │ ◄─────► │ Local State Store (RocksDB)  │  │
+    │  │              │         │ /tmp/kafka-streams/...       │  │
+    │  └──────────────┘         └──────────────┬───────────────┘  │
+    │                                          │                   │
+    └──────────────────────────────────────────┼───────────────────┘
+                                               │
+                                               ▼ (changelog)
+                                    ┌──────────────────────┐
+                                    │ Kafka Topic          │
+                                    │ app-id-store-changelog│
+                                    │ (compacted)          │
+                                    └──────────────────────┘
+
+FAULT TOLERANCE:
+
+    On Failure:
+        1. Task fails on instance A
+        2. Task reassigned to instance B
+        3. Instance B rebuilds state from changelog topic
+        4. Processing resumes
+
+    Standby Replicas (optional):
+        - Pre-built copies of state on other instances
+        - Faster recovery (no rebuild needed)
+        - num.standby.replicas=1
+
+QUERYABLE STATE:
+
+    - Read state store directly (without Kafka topic)
+    - Enables interactive queries
+
+    ReadOnlyKeyValueStore<String, Long> store =
+        streams.store(
+            StoreQueryParameters.fromNameAndType(
+                "counts-store",
+                QueryableStoreTypes.keyValueStore()
+            )
+        );
+    Long count = store.get("user1");
+
+================================================================================
+8. PROCESSING GUARANTEES
+================================================================================
+
+AT-LEAST-ONCE (default):
+    - Records processed at least once
+    - May have duplicates on failure
+    - Higher throughput
+
+EXACTLY-ONCE:
+    - Each record processed exactly once
+    - No duplicates, no data loss
+    - Uses transactions internally
+
+    Enable:
+        props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG,
+                  StreamsConfig.EXACTLY_ONCE_V2);
+
+    How it works:
+        1. Read from input topic
+        2. Process and update state
+        3. Write to output topic
+        4. Commit offset
+        All steps in single transaction (atomic)
+
+    Trade-offs:
+        - Higher latency (transaction overhead)
+        - Lower throughput
+        - Use when correctness > performance
+
+================================================================================
+9. CONFIGURATION
+================================================================================
+
+ESSENTIAL PROPERTIES:
+
+    Properties props = new Properties();
+
+    // Required
+    props.put(StreamsConfig.APPLICATION_ID_CONFIG, "my-stream-app");
+    props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+
+    // Serialization (required)
+    props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG,
+              Serdes.String().getClass());
+    props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG,
+              Serdes.String().getClass());
+
+IMPORTANT PROPERTIES:
+
+    // Processing guarantee
+    props.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, "exactly_once_v2");
+
+    // Number of stream threads per instance
+    props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 4);
+
+    // State store location
+    props.put(StreamsConfig.STATE_DIR_CONFIG, "/var/kafka-streams");
+
+    // Commit interval (how often to commit offsets)
+    props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);
+
+    // Standby replicas for faster recovery
+    props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 1);
+
+    // Cache size for deduplication (per thread)
+    props.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 10 * 1024 * 1024);
+
+================================================================================
+10. BASIC APPLICATION STRUCTURE
+================================================================================
+
+    import org.apache.kafka.streams.*;
+    import org.apache.kafka.streams.kstream.*;
+    import org.apache.kafka.common.serialization.Serdes;
+    import java.util.Properties;
+
+    public class WordCountApp {
+        public static void main(String[] args) {
+
+            // 1. Configuration
+            Properties props = new Properties();
+            props.put(StreamsConfig.APPLICATION_ID_CONFIG, "wordcount-app");
+            props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+            props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG,
+                      Serdes.String().getClass());
+            props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG,
+                      Serdes.String().getClass());
+
+            // 2. Build Topology
+            StreamsBuilder builder = new StreamsBuilder();
+
+            KStream<String, String> textLines = builder.stream("input-topic");
+
+            KTable<String, Long> wordCounts = textLines
+                .flatMapValues(line -> Arrays.asList(line.toLowerCase().split("\\W+")))
+                .groupBy((key, word) -> word)
+                .count(Materialized.as("counts-store"));
+
+            wordCounts.toStream().to("output-topic",
+                Produced.with(Serdes.String(), Serdes.Long()));
+
+            // 3. Create and Start Streams
+            KafkaStreams streams = new KafkaStreams(builder.build(), props);
+
+            // Graceful shutdown
+            Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+
+            streams.start();
+        }
+    }
+
+================================================================================
+11. SCALING AND PARALLELISM
+================================================================================
+
+TASKS:
+    - Unit of parallelism
+    - One task per input partition
+    - 10 partitions = 10 tasks max
+
+STREAM THREADS:
+    - Execute tasks
+    - Configured per instance: num.stream.threads
+    - More threads = more parallelism (up to task count)
+
+INSTANCES:
+    - Multiple JVM processes
+    - Tasks distributed across instances
+    - Add instances for horizontal scaling
+
+SCALING EXAMPLE:
+
+    Topic: 6 partitions → 6 tasks
+
+    Single Instance (3 threads):
+        Instance 1: [T0,T1] [T2,T3] [T4,T5]
+                    thread1  thread2  thread3
+
+    Two Instances (3 threads each):
+        Instance 1: [T0] [T1] [T2]
+        Instance 2: [T3] [T4] [T5]
+
+    Three Instances (2 threads each):
+        Instance 1: [T0] [T1]
+        Instance 2: [T2] [T3]
+        Instance 3: [T4] [T5]
+
+MAX PARALLELISM:
+    - Cannot exceed input partition count
+    - 6 partitions = max 6 parallel tasks
+    - More threads/instances than tasks = idle resources
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++--------------------+----------------------------------------------------+
+| Concept            | Description                                        |
++--------------------+----------------------------------------------------+
+| KStream            | Event stream (INSERT semantics)                    |
+| KTable             | Changelog stream (UPSERT semantics)                |
+| GlobalKTable       | Fully replicated lookup table                      |
+| Topology           | DAG of processors defining data flow               |
+| State Store        | Local storage for stateful operations (RocksDB)    |
+| Changelog Topic    | Kafka topic backing state store                    |
+| Task               | Unit of parallelism (one per partition)            |
+| Stream Thread      | Thread executing tasks                             |
++--------------------+----------------------------------------------------+
+
+STATELESS: filter, map, mapValues, flatMap, selectKey, branch, merge
+STATEFUL:  count, reduce, aggregate, join, windowed operations
+
+================================================================================

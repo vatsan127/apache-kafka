@@ -1,0 +1,347 @@
+================================================================================
+                         KAFKA CLI COMMANDS REFERENCE
+================================================================================
+
+================================================================================
+SERVER MANAGEMENT
+================================================================================
+
+Start Kafka (KRaft mode):
+    kafka-server-start.sh -daemon /opt/kafka/config/kraft/server.properties
+
+Stop Kafka:
+    kafka-server-stop.sh
+
+View logs:
+    tail -f /opt/kafka/logs/server.log
+
+Force kill (last resort):
+    ps aux | grep kafka
+    kill -9 <PID>
+
+================================================================================
+TOPIC COMMANDS
+================================================================================
+
+Create Topic:
+    kafka-topics.sh --create \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --partitions 3 \
+        --replication-factor 1
+
+List Topics:
+    kafka-topics.sh --list \
+        --bootstrap-server localhost:9092
+
+Describe Topic:
+    kafka-topics.sh --describe \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092
+
+Delete Topic:
+    kafka-topics.sh --delete \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092
+
+Alter Topic (increase partitions):
+    kafka-topics.sh --alter \
+        --topic <topic-name> \
+        --partitions 5 \
+        --bootstrap-server localhost:9092
+
+================================================================================
+TOPIC CONFIGURATION
+================================================================================
+
+View Topic Config:
+    kafka-configs.sh --describe \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092
+
+Add/Update Config:
+    kafka-configs.sh --alter \
+        --topic <topic-name> \
+        --add-config retention.ms=86400000 \
+        --bootstrap-server localhost:9092
+
+Remove Config (revert to default):
+    kafka-configs.sh --alter \
+        --topic <topic-name> \
+        --delete-config retention.ms \
+        --bootstrap-server localhost:9092
+
+Common Topic Configs:
+    retention.ms=604800000          # 7 days (default)
+    retention.bytes=-1              # Unlimited (default)
+    cleanup.policy=delete           # delete or compact
+    max.message.bytes=1048576       # 1MB (default)
+    min.insync.replicas=1           # Min ISR for acks=all
+
+================================================================================
+PRODUCER COMMANDS
+================================================================================
+
+Simple Producer:
+    kafka-console-producer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092
+
+Producer with Key:
+    kafka-console-producer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --property "parse.key=true" \
+        --property "key.separator=:"
+
+    # Input format: key:value
+    # Example: user1:{"name":"John","action":"login"}
+
+Producer with Acks:
+    kafka-console-producer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --producer-property acks=all
+
+Producer with Compression:
+    kafka-console-producer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --compression-codec gzip
+
+================================================================================
+CONSUMER COMMANDS
+================================================================================
+
+Consume New Messages:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092
+
+Consume from Beginning:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --from-beginning
+
+Consume with Consumer Group:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --group <group-name>
+
+Show Key, Value, and Timestamp:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true \
+        --property print.timestamp=true
+
+Consume Specific Partition:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --partition 0 \
+        --offset 100
+
+Consume with Max Messages:
+    kafka-console-consumer.sh \
+        --topic <topic-name> \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --max-messages 10
+
+================================================================================
+CONSUMER GROUP COMMANDS
+================================================================================
+
+List Consumer Groups:
+    kafka-consumer-groups.sh --list \
+        --bootstrap-server localhost:9092
+
+Describe Consumer Group:
+    kafka-consumer-groups.sh --describe \
+        --group <group-name> \
+        --bootstrap-server localhost:9092
+
+    # Output columns:
+    # GROUP, TOPIC, PARTITION, CURRENT-OFFSET, LOG-END-OFFSET, LAG, CONSUMER-ID
+
+Describe All Groups:
+    kafka-consumer-groups.sh --describe \
+        --all-groups \
+        --bootstrap-server localhost:9092
+
+Delete Consumer Group:
+    kafka-consumer-groups.sh --delete \
+        --group <group-name> \
+        --bootstrap-server localhost:9092
+
+================================================================================
+OFFSET MANAGEMENT
+================================================================================
+
+Reset to Earliest:
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --to-earliest \
+        --execute
+
+Reset to Latest:
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --to-latest \
+        --execute
+
+Reset to Specific Offset:
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --to-offset 100 \
+        --execute
+
+Reset by DateTime:
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --to-datetime 2024-01-01T00:00:00.000 \
+        --execute
+
+Shift Offset (forward/backward):
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --shift-by -10 \
+        --execute
+
+Dry Run (preview without executing):
+    kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --group <group-name> \
+        --topic <topic-name> \
+        --reset-offsets \
+        --to-earliest \
+        --dry-run
+
+================================================================================
+CONSUMER LAG COMMANDS
+================================================================================
+
+Check Lag for Consumer Group:
+    kafka-consumer-groups.sh --describe \
+        --group <group-name> \
+        --bootstrap-server localhost:9092
+
+    # Output columns:
+    # TOPIC  PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID
+    # LAG = LOG-END-OFFSET - CURRENT-OFFSET (messages behind)
+
+Check Lag for All Groups:
+    kafka-consumer-groups.sh --describe \
+        --all-groups \
+        --bootstrap-server localhost:9092
+
+Check Lag with State:
+    kafka-consumer-groups.sh --describe \
+        --group <group-name> \
+        --bootstrap-server localhost:9092 \
+        --state
+
+    # Shows: GROUP, COORDINATOR, ASSIGNMENT-STRATEGY, STATE, MEMBERS
+
+List Groups with State:
+    kafka-consumer-groups.sh --list \
+        --bootstrap-server localhost:9092 \
+        --state
+
+    # States: Stable, Empty, Dead, PreparingRebalance, CompletingRebalance
+
+Check Lag for Specific Topic:
+    kafka-consumer-groups.sh --describe \
+        --group <group-name> \
+        --bootstrap-server localhost:9092 | grep <topic-name>
+
+Get Log End Offsets (without consumer group):
+    kafka-run-class.sh kafka.tools.GetOffsetShell \
+        --broker-list localhost:9092 \
+        --topic <topic-name>
+
+    # Shows latest offset per partition
+
+Get Earliest Offsets:
+    kafka-run-class.sh kafka.tools.GetOffsetShell \
+        --broker-list localhost:9092 \
+        --topic <topic-name> \
+        --time -2
+
+    # -1 = latest, -2 = earliest
+
+================================================================================
+CLUSTER & BROKER COMMANDS
+================================================================================
+
+Describe Cluster:
+    kafka-metadata.sh --snapshot /opt/kafka/kraft-combined-logs/__cluster_metadata-0/00000000000000000000.log \
+        --command "cat"
+
+List Broker IDs:
+    kafka-broker-api-versions.sh \
+        --bootstrap-server localhost:9092
+
+Check Broker Version:
+    kafka-broker-api-versions.sh \
+        --bootstrap-server localhost:9092 | head -1
+
+================================================================================
+KRAFT MODE COMMANDS
+================================================================================
+
+Generate Cluster UUID:
+    kafka-storage.sh random-uuid
+
+Format Storage:
+    kafka-storage.sh format \
+        -t <cluster-uuid> \
+        -c /opt/kafka/config/kraft/server.properties
+
+Describe Storage:
+    kafka-storage.sh info \
+        -c /opt/kafka/config/kraft/server.properties
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++------------------+----------------------------------------------------------+
+| Operation        | Command                                                  |
++------------------+----------------------------------------------------------+
+| Start server     | kafka-server-start.sh -daemon <config>                   |
+| Stop server      | kafka-server-stop.sh                                     |
+| Create topic     | kafka-topics.sh --create --topic <name> ...              |
+| List topics      | kafka-topics.sh --list ...                               |
+| Describe topic   | kafka-topics.sh --describe --topic <name> ...            |
+| Produce          | kafka-console-producer.sh --topic <name> ...             |
+| Consume          | kafka-console-consumer.sh --topic <name> ...             |
+| List groups      | kafka-consumer-groups.sh --list ...                      |
+| Describe group   | kafka-consumer-groups.sh --describe --group <name> ...   |
+| Check lag        | kafka-consumer-groups.sh --describe --group <name> ...   |
+| Reset offsets    | kafka-consumer-groups.sh --reset-offsets ...             |
++------------------+----------------------------------------------------------+
+
+Note: Replace <topic-name>, <group-name>, etc. with actual values.
+      All commands assume --bootstrap-server localhost:9092
+
+================================================================================
