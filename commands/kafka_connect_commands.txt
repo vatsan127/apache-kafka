@@ -1,0 +1,300 @@
+================================================================================
+                    KAFKA CONNECT CLI COMMANDS REFERENCE
+================================================================================
+
+================================================================================
+SERVER MANAGEMENT
+================================================================================
+
+Start Standalone Mode:
+    connect-standalone.sh \
+        /opt/kafka/config/connect-standalone.properties \
+        /opt/kafka/config/connector.properties
+
+Start Distributed Mode:
+    connect-distributed.sh \
+        /opt/kafka/config/connect-distributed.properties
+
+View Logs:
+    tail -f /opt/kafka/logs/connect.log
+
+================================================================================
+REST API - CLUSTER INFO
+================================================================================
+
+Base URL: http://localhost:8083
+
+Get Connect Version:
+    curl http://localhost:8083/
+
+List Available Connector Plugins:
+    curl http://localhost:8083/connector-plugins
+
+Validate Connector Config:
+    curl -X PUT http://localhost:8083/connector-plugins/FileStreamSource/config/validate \
+        -H "Content-Type: application/json" \
+        -d '{"connector.class":"FileStreamSource","file":"/tmp/test.txt","topic":"test"}'
+
+================================================================================
+CONNECTOR MANAGEMENT
+================================================================================
+
+List All Connectors:
+    curl http://localhost:8083/connectors
+
+Create Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "my-connector",
+            "config": {
+                "connector.class": "FileStreamSource",
+                "file": "/tmp/input.txt",
+                "topic": "my-topic"
+            }
+        }'
+
+Get Connector Details:
+    curl http://localhost:8083/connectors/my-connector
+
+Get Connector Config:
+    curl http://localhost:8083/connectors/my-connector/config
+
+Update Connector Config:
+    curl -X PUT http://localhost:8083/connectors/my-connector/config \
+        -H "Content-Type: application/json" \
+        -d '{
+            "connector.class": "FileStreamSource",
+            "file": "/tmp/new-input.txt",
+            "topic": "my-topic"
+        }'
+
+Delete Connector:
+    curl -X DELETE http://localhost:8083/connectors/my-connector
+
+================================================================================
+CONNECTOR STATUS & CONTROL
+================================================================================
+
+Get Connector Status:
+    curl http://localhost:8083/connectors/my-connector/status
+
+    # Response shows state: RUNNING, PAUSED, FAILED, UNASSIGNED
+
+Pause Connector:
+    curl -X PUT http://localhost:8083/connectors/my-connector/pause
+
+Resume Connector:
+    curl -X PUT http://localhost:8083/connectors/my-connector/resume
+
+Restart Connector:
+    curl -X POST http://localhost:8083/connectors/my-connector/restart
+
+Restart Connector (include tasks):
+    curl -X POST "http://localhost:8083/connectors/my-connector/restart?includeTasks=true"
+
+Restart Connector (only failed):
+    curl -X POST "http://localhost:8083/connectors/my-connector/restart?onlyFailed=true"
+
+================================================================================
+TASK MANAGEMENT
+================================================================================
+
+List Tasks:
+    curl http://localhost:8083/connectors/my-connector/tasks
+
+Get Task Status:
+    curl http://localhost:8083/connectors/my-connector/tasks/0/status
+
+Restart Specific Task:
+    curl -X POST http://localhost:8083/connectors/my-connector/tasks/0/restart
+
+================================================================================
+CONNECTOR EXAMPLES
+================================================================================
+
+FileStream Source Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "file-source",
+            "config": {
+                "connector.class": "FileStreamSource",
+                "file": "/tmp/input.txt",
+                "topic": "file-topic",
+                "tasks.max": "1"
+            }
+        }'
+
+FileStream Sink Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "file-sink",
+            "config": {
+                "connector.class": "FileStreamSink",
+                "file": "/tmp/output.txt",
+                "topics": "file-topic",
+                "tasks.max": "1"
+            }
+        }'
+
+JDBC Source Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "jdbc-source",
+            "config": {
+                "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+                "connection.url": "jdbc:mysql://localhost:3306/mydb",
+                "connection.user": "user",
+                "connection.password": "password",
+                "mode": "incrementing",
+                "incrementing.column.name": "id",
+                "topic.prefix": "mysql-",
+                "tasks.max": "1"
+            }
+        }'
+
+JDBC Sink Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "jdbc-sink",
+            "config": {
+                "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+                "connection.url": "jdbc:postgresql://localhost:5432/mydb",
+                "connection.user": "user",
+                "connection.password": "password",
+                "topics": "orders",
+                "auto.create": "true",
+                "insert.mode": "upsert",
+                "pk.mode": "record_key",
+                "pk.fields": "id",
+                "tasks.max": "1"
+            }
+        }'
+
+Elasticsearch Sink Connector:
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{
+            "name": "es-sink",
+            "config": {
+                "connector.class": "io.confluent.connect.elasticsearch.ElasticsearchSinkConnector",
+                "connection.url": "http://localhost:9200",
+                "topics": "logs",
+                "type.name": "_doc",
+                "key.ignore": "true",
+                "tasks.max": "1"
+            }
+        }'
+
+================================================================================
+LOGGING & DEBUG
+================================================================================
+
+Get Logger Levels:
+    curl http://localhost:8083/admin/loggers
+
+Set Logger Level:
+    curl -X PUT http://localhost:8083/admin/loggers/org.apache.kafka.connect \
+        -H "Content-Type: application/json" \
+        -d '{"level": "DEBUG"}'
+
+Reset Logger Level:
+    curl -X PUT http://localhost:8083/admin/loggers/org.apache.kafka.connect \
+        -H "Content-Type: application/json" \
+        -d '{"level": "INFO"}'
+
+================================================================================
+OFFSETS MANAGEMENT (Kafka 3.x+)
+================================================================================
+
+Get Source Connector Offsets:
+    curl http://localhost:8083/connectors/my-source/offsets
+
+Alter Source Connector Offsets:
+    curl -X PATCH http://localhost:8083/connectors/my-source/offsets \
+        -H "Content-Type: application/json" \
+        -d '{"offsets": [{"partition": {"filename": "/tmp/input.txt"}, "offset": {"position": 0}}]}'
+
+Reset Source Connector Offsets:
+    curl -X DELETE http://localhost:8083/connectors/my-source/offsets
+
+Get Sink Connector Offsets:
+    curl http://localhost:8083/connectors/my-sink/offsets
+
+================================================================================
+INTERNAL TOPICS MANAGEMENT
+================================================================================
+
+List Connect Internal Topics:
+    kafka-topics.sh --list --bootstrap-server localhost:9092 | grep connect
+
+Describe Config Topic:
+    kafka-topics.sh --describe \
+        --topic connect-configs \
+        --bootstrap-server localhost:9092
+
+Describe Offset Topic:
+    kafka-topics.sh --describe \
+        --topic connect-offsets \
+        --bootstrap-server localhost:9092
+
+Describe Status Topic:
+    kafka-topics.sh --describe \
+        --topic connect-status \
+        --bootstrap-server localhost:9092
+
+View Config Topic Content:
+    kafka-console-consumer.sh \
+        --topic connect-configs \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true
+
+================================================================================
+TROUBLESHOOTING COMMANDS
+================================================================================
+
+Check if Connect is Running:
+    curl http://localhost:8083/ 2>/dev/null && echo "Connect is running" || echo "Connect is down"
+
+List Failed Connectors:
+    curl -s http://localhost:8083/connectors | jq -r '.[]' | while read connector; do
+        status=$(curl -s http://localhost:8083/connectors/$connector/status | jq -r '.connector.state')
+        if [ "$status" == "FAILED" ]; then
+            echo "$connector: FAILED"
+        fi
+    done
+
+Get All Connector Statuses:
+    curl -s http://localhost:8083/connectors | jq -r '.[]' | while read connector; do
+        echo "=== $connector ==="
+        curl -s http://localhost:8083/connectors/$connector/status | jq '.connector.state, .tasks[].state'
+    done
+
+Check Connector Errors:
+    curl -s http://localhost:8083/connectors/my-connector/status | jq '.tasks[].trace'
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++---------------------------+------------------------------------------------+
+| Operation                 | Command                                        |
++---------------------------+------------------------------------------------+
+| Start standalone          | connect-standalone.sh <worker> <connector>     |
+| Start distributed         | connect-distributed.sh <worker>                |
+| List connectors           | curl localhost:8083/connectors                 |
+| Create connector          | curl -X POST localhost:8083/connectors -d ...  |
+| Get status                | curl localhost:8083/connectors/{name}/status   |
+| Pause                     | curl -X PUT localhost:8083/connectors/{name}/pause |
+| Resume                    | curl -X PUT localhost:8083/connectors/{name}/resume |
+| Restart                   | curl -X POST localhost:8083/connectors/{name}/restart |
+| Delete                    | curl -X DELETE localhost:8083/connectors/{name}|
+| List plugins              | curl localhost:8083/connector-plugins          |
++---------------------------+------------------------------------------------+
+
+================================================================================

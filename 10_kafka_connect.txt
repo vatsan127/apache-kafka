@@ -1,0 +1,606 @@
+================================================================================
+                              KAFKA CONNECT
+================================================================================
+
+================================================================================
+1. WHAT IS KAFKA CONNECT?
+================================================================================
+
+DEFINITION:
+    - Framework for streaming data between Kafka and external systems
+    - Scalable and fault-tolerant data integration
+    - No custom code required for common integrations
+
+PURPOSE:
+    - Import data INTO Kafka (Source Connectors)
+    - Export data FROM Kafka (Sink Connectors)
+    - Standardized way to move data
+
+ARCHITECTURE:
+
+    ┌──────────────┐                              ┌──────────────┐
+    │   External   │                              │   External   │
+    │   Systems    │                              │   Systems    │
+    │ (DB, Files)  │                              │ (DB, S3, ES) │
+    └──────┬───────┘                              └──────▲───────┘
+           │                                             │
+           │ Source                              Sink    │
+           │ Connector                        Connector  │
+           ▼                                             │
+    ┌──────────────────────────────────────────────────────────────┐
+    │                      KAFKA CONNECT                            │
+    │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+    │  │   Worker    │  │   Worker    │  │   Worker    │           │
+    │  │  (Tasks)    │  │  (Tasks)    │  │  (Tasks)    │           │
+    │  └─────────────┘  └─────────────┘  └─────────────┘           │
+    └──────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                      KAFKA CLUSTER                            │
+    │         Topics: data, connect-offsets, connect-configs        │
+    └──────────────────────────────────────────────────────────────┘
+
+WHY KAFKA CONNECT?
+
+    Without Connect:
+        - Write custom producer/consumer code
+        - Handle failures, restarts, scaling manually
+        - Reinvent offset tracking
+
+    With Connect:
+        - Pre-built connectors for common systems
+        - Automatic offset management
+        - Distributed, scalable, fault-tolerant
+        - Declarative configuration
+
+================================================================================
+2. CORE CONCEPTS
+================================================================================
+
+CONNECTORS:
+
+    Source Connector:
+        - Reads from external system
+        - Writes to Kafka topics
+        - Examples: JDBC, Debezium (CDC), File
+
+    Sink Connector:
+        - Reads from Kafka topics
+        - Writes to external system
+        - Examples: JDBC, Elasticsearch, S3, HDFS
+
+TASKS:
+
+    - Unit of parallelism
+    - Connector divides work into tasks
+    - Each task handles subset of data
+    - Example: JDBC connector creates task per table
+
+WORKERS:
+
+    - JVM processes that run connectors/tasks
+    - Two modes: Standalone, Distributed
+
+    Standalone:
+        - Single worker process
+        - Good for development/testing
+        - No fault tolerance
+
+    Distributed:
+        - Multiple workers in cluster
+        - Tasks distributed across workers
+        - Automatic failover
+        - Production recommended
+
+CONVERTERS:
+
+    - Serialize/deserialize data
+    - Transform between Connect format and Kafka format
+    - Common converters:
+        - JsonConverter
+        - AvroConverter (with Schema Registry)
+        - StringConverter
+        - ByteArrayConverter
+
+TRANSFORMS (SMT - Single Message Transforms):
+
+    - Modify messages in-flight
+    - Applied per message
+    - Chain multiple transforms
+    - Examples: Filter, Rename, Mask, Timestamp
+
+================================================================================
+3. DEPLOYMENT MODES
+================================================================================
+
+STANDALONE MODE:
+
+    Characteristics:
+        - Single process
+        - Offsets stored in local file
+        - No automatic failover
+        - Simple configuration
+
+    Use Cases:
+        - Development and testing
+        - Simple pipelines
+        - Edge deployments
+
+    Start Command:
+        connect-standalone.sh \
+            config/connect-standalone.properties \
+            config/source-connector.properties
+
+    Configuration (connect-standalone.properties):
+        bootstrap.servers=localhost:9092
+        key.converter=org.apache.kafka.connect.json.JsonConverter
+        value.converter=org.apache.kafka.connect.json.JsonConverter
+        offset.storage.file.filename=/tmp/connect.offsets
+
+DISTRIBUTED MODE:
+
+    Characteristics:
+        - Multiple workers
+        - Offsets stored in Kafka topic
+        - Automatic load balancing
+        - Fault tolerant
+
+    Use Cases:
+        - Production deployments
+        - High availability requirements
+        - Large-scale data pipelines
+
+    Start Command:
+        connect-distributed.sh config/connect-distributed.properties
+
+    Configuration (connect-distributed.properties):
+        bootstrap.servers=localhost:9092
+        group.id=connect-cluster
+
+        key.converter=org.apache.kafka.connect.json.JsonConverter
+        value.converter=org.apache.kafka.connect.json.JsonConverter
+
+        # Internal topics for distributed mode
+        config.storage.topic=connect-configs
+        offset.storage.topic=connect-offsets
+        status.storage.topic=connect-status
+
+        config.storage.replication.factor=3
+        offset.storage.replication.factor=3
+        status.storage.replication.factor=3
+
+INTERNAL TOPICS (Distributed Mode):
+
+    connect-configs:
+        - Stores connector configurations
+        - Compacted topic
+
+    connect-offsets:
+        - Stores source connector offsets
+        - Tracks position in source system
+
+    connect-status:
+        - Stores connector/task status
+        - Health information
+
+================================================================================
+4. COMMON CONNECTORS
+================================================================================
+
+SOURCE CONNECTORS:
+
+    JDBC Source Connector:
+        - Reads from relational databases
+        - Supports bulk and incremental modes
+        - Tables become topics
+
+        Configuration:
+            connector.class=io.confluent.connect.jdbc.JdbcSourceConnector
+            connection.url=jdbc:mysql://localhost:3306/mydb
+            connection.user=user
+            connection.password=password
+            mode=incrementing
+            incrementing.column.name=id
+            topic.prefix=mysql-
+
+    Debezium (CDC):
+        - Change Data Capture
+        - Captures INSERT, UPDATE, DELETE
+        - Supports MySQL, PostgreSQL, MongoDB, etc.
+
+        Configuration (MySQL):
+            connector.class=io.debezium.connector.mysql.MySqlConnector
+            database.hostname=localhost
+            database.port=3306
+            database.user=debezium
+            database.password=password
+            database.server.id=1
+            database.server.name=mysql-server
+            database.include.list=mydb
+            table.include.list=mydb.users,mydb.orders
+
+    FileStream Source:
+        - Reads from files
+        - Good for testing
+        - Not for production
+
+        Configuration:
+            connector.class=FileStreamSource
+            file=/path/to/input.txt
+            topic=file-topic
+
+SINK CONNECTORS:
+
+    JDBC Sink Connector:
+        - Writes to relational databases
+        - Auto-creates tables (optional)
+        - Supports upsert mode
+
+        Configuration:
+            connector.class=io.confluent.connect.jdbc.JdbcSinkConnector
+            connection.url=jdbc:postgresql://localhost:5432/mydb
+            connection.user=user
+            connection.password=password
+            topics=orders
+            auto.create=true
+            insert.mode=upsert
+            pk.mode=record_key
+            pk.fields=id
+
+    Elasticsearch Sink:
+        - Writes to Elasticsearch
+        - Auto-creates indexes
+        - Supports document routing
+
+        Configuration:
+            connector.class=io.confluent.connect.elasticsearch.ElasticsearchSinkConnector
+            connection.url=http://localhost:9200
+            topics=logs
+            type.name=_doc
+            key.ignore=true
+
+    S3 Sink Connector:
+        - Writes to Amazon S3
+        - Supports partitioning
+        - Multiple formats (JSON, Avro, Parquet)
+
+        Configuration:
+            connector.class=io.confluent.connect.s3.S3SinkConnector
+            s3.bucket.name=my-bucket
+            s3.region=us-east-1
+            topics=events
+            flush.size=1000
+            storage.class=io.confluent.connect.s3.storage.S3Storage
+            format.class=io.confluent.connect.s3.format.json.JsonFormat
+
+    HDFS Sink Connector:
+        - Writes to Hadoop HDFS
+        - Supports partitioning
+        - Integrates with Hive
+
+================================================================================
+5. REST API
+================================================================================
+
+Kafka Connect exposes REST API for management (default port: 8083)
+
+CLUSTER INFORMATION:
+
+    GET /                           - Connect version info
+    GET /connectors                 - List all connectors
+    GET /connector-plugins          - List available connector plugins
+
+CONNECTOR MANAGEMENT:
+
+    Create Connector:
+        POST /connectors
+        Content-Type: application/json
+
+        {
+            "name": "my-source-connector",
+            "config": {
+                "connector.class": "FileStreamSource",
+                "file": "/path/to/file.txt",
+                "topic": "my-topic"
+            }
+        }
+
+    Get Connector:
+        GET /connectors/{name}
+
+    Get Connector Config:
+        GET /connectors/{name}/config
+
+    Update Connector:
+        PUT /connectors/{name}/config
+        Content-Type: application/json
+
+        {
+            "connector.class": "FileStreamSource",
+            "file": "/new/path/file.txt",
+            "topic": "my-topic"
+        }
+
+    Delete Connector:
+        DELETE /connectors/{name}
+
+CONNECTOR STATUS:
+
+    Get Status:
+        GET /connectors/{name}/status
+
+        Response:
+        {
+            "name": "my-connector",
+            "connector": {
+                "state": "RUNNING",
+                "worker_id": "worker1:8083"
+            },
+            "tasks": [
+                {
+                    "id": 0,
+                    "state": "RUNNING",
+                    "worker_id": "worker1:8083"
+                }
+            ]
+        }
+
+TASK MANAGEMENT:
+
+    List Tasks:
+        GET /connectors/{name}/tasks
+
+    Get Task Status:
+        GET /connectors/{name}/tasks/{taskId}/status
+
+    Restart Task:
+        POST /connectors/{name}/tasks/{taskId}/restart
+
+CONNECTOR CONTROL:
+
+    Pause Connector:
+        PUT /connectors/{name}/pause
+
+    Resume Connector:
+        PUT /connectors/{name}/resume
+
+    Restart Connector:
+        POST /connectors/{name}/restart
+
+================================================================================
+6. TRANSFORMS (SMT)
+================================================================================
+
+Single Message Transforms modify records individually.
+
+BUILT-IN TRANSFORMS:
+
+    InsertField:
+        - Add field to record
+        transforms=addTimestamp
+        transforms.addTimestamp.type=org.apache.kafka.connect.transforms.InsertField$Value
+        transforms.addTimestamp.timestamp.field=processed_at
+
+    ReplaceField:
+        - Include/exclude/rename fields
+        transforms=removeFields
+        transforms.removeFields.type=org.apache.kafka.connect.transforms.ReplaceField$Value
+        transforms.removeFields.exclude=password,ssn
+
+    MaskField:
+        - Mask sensitive data
+        transforms=maskPII
+        transforms.maskPII.type=org.apache.kafka.connect.transforms.MaskField$Value
+        transforms.maskPII.fields=credit_card
+        transforms.maskPII.replacement=****
+
+    Filter:
+        - Drop records based on condition
+        transforms=filterNull
+        transforms.filterNull.type=org.apache.kafka.connect.transforms.Filter
+        transforms.filterNull.condition=value.amount == null
+
+    TimestampConverter:
+        - Convert timestamp formats
+        transforms=convertTime
+        transforms.convertTime.type=org.apache.kafka.connect.transforms.TimestampConverter$Value
+        transforms.convertTime.field=created_at
+        transforms.convertTime.target.type=Timestamp
+
+    ValueToKey:
+        - Extract key from value
+        transforms=extractKey
+        transforms.extractKey.type=org.apache.kafka.connect.transforms.ValueToKey
+        transforms.extractKey.fields=id
+
+    ExtractField:
+        - Extract single field
+        transforms=unwrap
+        transforms.unwrap.type=org.apache.kafka.connect.transforms.ExtractField$Value
+        transforms.unwrap.field=payload
+
+    Flatten:
+        - Flatten nested structures
+        transforms=flatten
+        transforms.flatten.type=org.apache.kafka.connect.transforms.Flatten$Value
+        transforms.flatten.delimiter=_
+
+CHAINING TRANSFORMS:
+
+    transforms=rename,mask,addField
+    transforms.rename.type=...
+    transforms.mask.type=...
+    transforms.addField.type=...
+
+    Applied in order: rename → mask → addField
+
+================================================================================
+7. ERROR HANDLING
+================================================================================
+
+ERROR TYPES:
+
+    Connector Errors:
+        - Configuration errors
+        - Connection failures
+        - Authentication issues
+
+    Task Errors:
+        - Data format errors
+        - Serialization failures
+        - External system errors
+
+    Transient vs Permanent:
+        - Transient: Network timeout, temporary unavailability
+        - Permanent: Invalid data, schema mismatch
+
+ERROR HANDLING CONFIGURATION:
+
+    errors.tolerance:
+        - none (default): Fail on first error
+        - all: Skip bad records, continue processing
+
+    errors.log.enable:
+        - true: Log errors
+        - false: Silent skip
+
+    errors.log.include.messages:
+        - true: Include failed message in log
+        - false: Log error without message
+
+    errors.deadletterqueue.topic.name:
+        - Topic for failed records
+        - Enables later inspection/reprocessing
+
+EXAMPLE - TOLERANT CONNECTOR:
+
+    {
+        "name": "tolerant-sink",
+        "config": {
+            "connector.class": "JdbcSinkConnector",
+            ...
+            "errors.tolerance": "all",
+            "errors.log.enable": "true",
+            "errors.log.include.messages": "true",
+            "errors.deadletterqueue.topic.name": "dlq-jdbc-sink",
+            "errors.deadletterqueue.topic.replication.factor": "3"
+        }
+    }
+
+DEAD LETTER QUEUE:
+
+    Purpose:
+        - Capture failed records
+        - Allow inspection and debugging
+        - Enable reprocessing after fix
+
+    DLQ Record Contains:
+        - Original record
+        - Error details
+        - Timestamp
+        - Connector/task information
+
+================================================================================
+8. MONITORING
+================================================================================
+
+JMX METRICS:
+
+    Connector Metrics:
+        kafka.connect:type=connector-metrics,connector=*
+        - connector-count
+        - connector-startup-attempts-total
+        - connector-startup-success-total
+
+    Task Metrics:
+        kafka.connect:type=connector-task-metrics,connector=*,task=*
+        - offset-commit-success-percentage
+        - offset-commit-avg-time-ms
+        - batch-size-avg
+
+    Source Task Metrics:
+        kafka.connect:type=source-task-metrics
+        - source-record-poll-rate
+        - source-record-write-rate
+
+    Sink Task Metrics:
+        kafka.connect:type=sink-task-metrics
+        - sink-record-read-rate
+        - sink-record-send-rate
+
+REST API MONITORING:
+
+    Health Check:
+        GET /connectors/{name}/status
+
+    States:
+        RUNNING - Operating normally
+        PAUSED - Manually paused
+        FAILED - Error occurred
+        UNASSIGNED - Not assigned to worker
+
+LOGGING:
+
+    Configure log level:
+        PUT /admin/loggers/io.confluent.connect
+        {"level": "DEBUG"}
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+DEPLOYMENT:
+    Standalone: connect-standalone.sh <worker.props> <connector.props>
+    Distributed: connect-distributed.sh <worker.props>
+
+REST API (Base URL: http://localhost:8083):
+
+    # List all connectors
+    curl http://localhost:8083/connectors
+
+    # Create connector
+    curl -X POST http://localhost:8083/connectors \
+        -H "Content-Type: application/json" \
+        -d '{"name":"my-connector","config":{...}}'
+
+    # Get connector details
+    curl http://localhost:8083/connectors/my-connector
+
+    # Get connector status
+    curl http://localhost:8083/connectors/my-connector/status
+
+    # Update connector config
+    curl -X PUT http://localhost:8083/connectors/my-connector/config \
+        -H "Content-Type: application/json" \
+        -d '{"connector.class":"...","topic":"..."}'
+
+    # Delete connector
+    curl -X DELETE http://localhost:8083/connectors/my-connector
+
+    # Pause connector
+    curl -X PUT http://localhost:8083/connectors/my-connector/pause
+
+    # Resume connector
+    curl -X PUT http://localhost:8083/connectors/my-connector/resume
+
+    # Restart connector
+    curl -X POST http://localhost:8083/connectors/my-connector/restart
+
+    # List connector plugins
+    curl http://localhost:8083/connector-plugins
+
+COMMON CONNECTORS:
+    Source: JDBC, Debezium, FileStream, S3, Kinesis
+    Sink: JDBC, Elasticsearch, S3, HDFS, MongoDB
+
+INTERNAL TOPICS (Distributed):
+    connect-configs  - Connector configurations
+    connect-offsets  - Source offsets
+    connect-status   - Connector/task status
+
+ERROR HANDLING:
+    errors.tolerance=all
+    errors.deadletterqueue.topic.name=my-dlq
+
+================================================================================

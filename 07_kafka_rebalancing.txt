@@ -1,0 +1,500 @@
+================================================================================
+                           KAFKA CONSUMER REBALANCING
+================================================================================
+
+================================================================================
+1. WHAT IS REBALANCING?
+================================================================================
+
+DEFINITION:
+    - Process of redistributing partitions among consumers in a group
+    - Ensures fair partition assignment when group membership changes
+    - Coordinated by Group Coordinator (a Kafka broker)
+
+WHY REBALANCING EXISTS:
+    - Maintain even workload distribution
+    - Handle consumer failures (reassign orphaned partitions)
+    - Scale consumers up/down dynamically
+    - Adapt to topic partition changes
+
+REBALANCE IMPACT:
+    - Temporary processing pause (consumers stop reading)
+    - Potential duplicate processing (uncommitted offsets reprocessed)
+    - State loss for stateful consumers (must rebuild from changelog)
+    - Increased latency during rebalance period
+
+================================================================================
+2. REBALANCE TRIGGERS
+================================================================================
+
+CONSUMER MEMBERSHIP CHANGES:
+
+    1. Consumer Joins Group
+       - New application instance starts
+       - Consumer subscribes to topic(s)
+       - Triggers rebalance to include new member
+
+    2. Consumer Leaves Group (Graceful)
+       - Application calls consumer.close()
+       - Sends LeaveGroup request to coordinator
+       - Immediate rebalance triggered
+
+    3. Consumer Crashes (Ungraceful)
+       - Application crashes, network failure, OOM
+       - Coordinator detects via missed heartbeats
+       - Rebalance after session.timeout.ms expires
+
+    4. Consumer Excluded (Slow Processing)
+       - No poll() call within max.poll.interval.ms
+       - Coordinator assumes consumer is stuck/dead
+       - Removed from group, triggers rebalance
+
+TOPIC/PARTITION CHANGES:
+
+    5. Partition Count Increases
+       - Admin adds partitions to topic
+       - New partitions need assignment
+       - Triggers rebalance
+
+    6. New Topic Matches Pattern
+       - Consumer uses pattern subscription (e.g., "order-.*")
+       - New topic "order-events" created
+       - Triggers rebalance to include new topic
+
+SUBSCRIPTION CHANGES:
+
+    7. Consumer Changes Subscription
+       - Consumer subscribes to additional topics
+       - Consumer unsubscribes from topics
+       - Triggers rebalance
+
+================================================================================
+3. GROUP COORDINATOR
+================================================================================
+
+WHAT IS GROUP COORDINATOR?
+    - A Kafka broker responsible for managing consumer group
+    - Handles join/leave requests
+    - Tracks member heartbeats
+    - Initiates rebalances
+
+HOW COORDINATOR IS SELECTED:
+    - Based on group.id hash
+    - Formula: hash(group.id) % __consumer_offsets partitions
+    - Leader of that partition becomes coordinator
+
+COORDINATOR RESPONSIBILITIES:
+    - Receive JoinGroup requests from consumers
+    - Select group leader (first consumer to join)
+    - Distribute partition assignments
+    - Monitor consumer health via heartbeats
+    - Store committed offsets in __consumer_offsets topic
+
+GROUP LEADER vs COORDINATOR:
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │ Group Coordinator (Broker)     │ Group Leader (Consumer)         │
+    ├──────────────────────────────────────────────────────────────────┤
+    │ - Kafka broker                 │ - One of the consumers          │
+    │ - Manages group membership     │ - Calculates partition assignment│
+    │ - Monitors heartbeats          │ - Uses assignment strategy      │
+    │ - Stores offsets               │ - Sends assignment to coordinator│
+    │ - Initiates rebalance          │ - Changes each rebalance        │
+    └──────────────────────────────────────────────────────────────────┘
+
+================================================================================
+4. REBALANCE PROTOCOLS
+================================================================================
+
+TWO PROTOCOLS:
+
+    1. Eager Rebalance (Legacy)
+       - Stop-the-world approach
+       - All consumers stop, revoke all partitions
+       - Reassign from scratch
+       - Simple but disruptive
+
+    2. Incremental Cooperative Rebalance
+       - Incremental approach
+       - Only affected partitions revoked
+       - Unaffected consumers keep processing
+       - Complex but minimal disruption
+
+EAGER REBALANCE PROTOCOL:
+
+    Timeline:
+    ┌────────────────────────────────────────────────────────────────────┐
+    │ T0: Trigger (e.g., C3 joins)                                       │
+    │ T1: All consumers receive rebalance signal                         │
+    │ T2: ALL consumers STOP processing                                  │
+    │ T3: ALL consumers revoke ALL partitions                            │
+    │ T4: Consumers send JoinGroup request                               │
+    │ T5: Leader calculates new assignment                               │
+    │ T6: Coordinator distributes assignment                             │
+    │ T7: Consumers receive new partitions                               │
+    │ T8: ALL consumers RESUME processing                                │
+    └────────────────────────────────────────────────────────────────────┘
+
+    Problem: Complete processing halt from T2 to T8!
+
+    Example (3 consumers, 6 partitions, C3 joins):
+
+        Before:
+            C1: [P0, P1, P2]
+            C2: [P3, P4, P5]
+
+        During Rebalance:
+            C1: [] (stopped)
+            C2: [] (stopped)
+            C3: [] (waiting)
+
+        After:
+            C1: [P0, P1]
+            C2: [P2, P3]
+            C3: [P4, P5]
+
+INCREMENTAL COOPERATIVE REBALANCE:
+
+    Timeline:
+    ┌────────────────────────────────────────────────────────────────────┐
+    │ T0: Trigger (e.g., C3 joins)                                       │
+    │ T1: First rebalance - identify partitions to move                  │
+    │ T2: Only C2 revokes P5 (others keep processing!)                   │
+    │ T3: Second rebalance - assign revoked partitions                   │
+    │ T4: C3 receives P5                                                 │
+    │ T5: All consumers processing (minimal gap)                         │
+    └────────────────────────────────────────────────────────────────────┘
+
+    Key Difference: C1 never stops processing P0, P1, P2!
+
+    Example (same scenario):
+
+        Before:
+            C1: [P0, P1, P2] (processing)
+            C2: [P3, P4, P5] (processing)
+
+        First Rebalance:
+            C1: [P0, P1, P2] (still processing!)
+            C2: [P3, P4] (revoked P5, still processing P3, P4!)
+            C3: [] (waiting)
+
+        Second Rebalance:
+            C1: [P0, P1] (revoked P2)
+            C2: [P3, P4] (unchanged)
+            C3: [P2, P5] (assigned)
+
+================================================================================
+5. PARTITION ASSIGNMENT STRATEGIES
+================================================================================
+
+Configured via: partition.assignment.strategy
+
+RANGE ASSIGNOR (Default):
+
+    Algorithm:
+        1. Sort partitions by topic, then by partition number
+        2. Sort consumers by member ID
+        3. For each topic: divide partitions among consumers in ranges
+
+    Example (topics A, B with 3 partitions each, 2 consumers):
+
+        Topic A: P0, P1, P2
+        Topic B: P0, P1, P2
+
+        C1 gets: A-P0, A-P1, B-P0, B-P1 (4 partitions)
+        C2 gets: A-P2, B-P2 (2 partitions)
+
+    Problem: Imbalanced! First consumer gets more partitions.
+
+    Best for: Single topic subscriptions
+
+ROUND ROBIN ASSIGNOR:
+
+    Algorithm:
+        1. List all partitions from all topics
+        2. Sort partitions
+        3. Assign partitions round-robin to consumers
+
+    Same Example:
+
+        All partitions: A-P0, A-P1, A-P2, B-P0, B-P1, B-P2
+
+        C1 gets: A-P0, A-P2, B-P1 (3 partitions)
+        C2 gets: A-P1, B-P0, B-P2 (3 partitions)
+
+    Result: Balanced!
+
+    Best for: Multiple topics with same consumers subscribing to all
+
+STICKY ASSIGNOR:
+
+    Goals:
+        1. Balance partitions evenly (like Round Robin)
+        2. Minimize partition movement during rebalance
+
+    Algorithm:
+        - First assignment: balanced like Round Robin
+        - Rebalance: keep existing assignments, only move what's necessary
+
+    Example (C3 joins):
+
+        Before:
+            C1: [P0, P1, P2]
+            C2: [P3, P4, P5]
+
+        Round Robin would reassign everything.
+
+        Sticky keeps:
+            C1: [P0, P1] (kept P0, P1, lost P2)
+            C2: [P3, P4] (kept P3, P4, lost P5)
+            C3: [P2, P5] (got moved partitions)
+
+    Benefit: Less state rebuilding for stateful consumers
+
+COOPERATIVE STICKY ASSIGNOR:
+
+    Same as Sticky but uses Incremental Cooperative Protocol
+
+    Config:
+        partition.assignment.strategy=
+            org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+    Benefits:
+        - Balanced assignment
+        - Minimal partition movement
+        - No stop-the-world pause
+
+    RECOMMENDED FOR PRODUCTION
+
+COMPARISON:
+
+    +----------------------+----------+------------+-------------+-------------+
+    | Strategy             | Balance  | Movement   | Protocol    | Recommended |
+    +----------------------+----------+------------+-------------+-------------+
+    | Range                | Poor     | High       | Eager       | No          |
+    | RoundRobin           | Good     | High       | Eager       | No          |
+    | Sticky               | Good     | Low        | Eager       | Maybe       |
+    | CooperativeSticky    | Good     | Low        | Cooperative | Yes         |
+    +----------------------+----------+------------+-------------+-------------+
+
+================================================================================
+6. CONSUMER REBALANCE LISTENER
+================================================================================
+
+PURPOSE:
+    - Hook into rebalance lifecycle
+    - Perform actions before/after partition changes
+    - Critical for stateful consumers
+
+CALLBACK METHODS:
+
+    onPartitionsRevoked(Collection<TopicPartition> partitions):
+        - Called BEFORE partitions are revoked
+        - Partitions still assigned to this consumer
+        - Last chance to commit offsets
+        - Last chance to save state
+
+        Use for:
+            - Commit pending offsets (consumer.commitSync())
+            - Flush buffers
+            - Close resources (DB connections, file handles)
+            - Save local state
+
+    onPartitionsAssigned(Collection<TopicPartition> partitions):
+        - Called AFTER new partitions are assigned
+        - Before poll() returns records from new partitions
+
+        Use for:
+            - Initialize state for new partitions
+            - Seek to specific offsets
+            - Open resources
+            - Load state from external store
+
+    onPartitionsLost(Collection<TopicPartition> partitions):
+        - Cooperative protocol only
+        - Called when partitions lost unexpectedly
+        - Partitions already reassigned to another consumer
+        - Cannot commit offsets (too late)
+
+        Use for:
+            - Cleanup only (no commits)
+            - Log for debugging
+
+EAGER vs COOPERATIVE CALLBACKS:
+
+    Eager Protocol:
+        onPartitionsRevoked() → called with ALL partitions
+        onPartitionsAssigned() → called with new assignment
+
+    Cooperative Protocol:
+        onPartitionsRevoked() → called only with partitions being moved
+        onPartitionsLost() → called if partitions lost unexpectedly
+        onPartitionsAssigned() → called with newly assigned partitions
+
+================================================================================
+7. STATIC GROUP MEMBERSHIP
+================================================================================
+
+PROBLEM:
+    - Rolling deployments trigger rebalances
+    - Each restart: leave group → rebalance → rejoin → rebalance
+    - Unnecessary disruption for brief restarts
+
+SOLUTION: Static Membership
+
+    - Assign fixed identity to each consumer
+    - Consumer retains partition assignment across restarts
+    - No rebalance if consumer rejoins within session.timeout.ms
+
+CONFIGURATION:
+
+    group.instance.id = "consumer-instance-1"
+
+    Each consumer in the group needs unique instance ID.
+
+HOW IT WORKS:
+
+    Without Static Membership:
+        1. Consumer stops → LeaveGroup sent
+        2. Immediate rebalance
+        3. Consumer restarts → JoinGroup sent
+        4. Another rebalance
+
+    With Static Membership:
+        1. Consumer stops → No LeaveGroup (just disappears)
+        2. Coordinator waits for session.timeout.ms
+        3. Consumer restarts within timeout → Rejoins with same assignment
+        4. No rebalance!
+
+    If consumer doesn't restart within session.timeout.ms:
+        - Coordinator triggers rebalance
+        - Partitions reassigned to other consumers
+
+BEST PRACTICES:
+
+    - Set session.timeout.ms appropriately (e.g., 5-10 minutes for deployments)
+    - Use predictable instance IDs (e.g., hostname, pod name)
+    - Ensure unique instance IDs across all consumers
+
+USE CASES:
+
+    - Rolling deployments (Kubernetes, etc.)
+    - Brief maintenance restarts
+    - Network blips causing disconnections
+
+================================================================================
+8. MINIMIZING REBALANCE IMPACT
+================================================================================
+
+CONFIGURATION TUNING:
+
+    1. Use CooperativeStickyAssignor
+       partition.assignment.strategy=CooperativeStickyAssignor
+
+    2. Use Static Membership for deployments
+       group.instance.id=<unique-id>
+       session.timeout.ms=300000  (5 min for rolling deploys)
+
+    3. Tune heartbeat settings
+       heartbeat.interval.ms=3000
+       session.timeout.ms=45000
+       Ratio: session.timeout / heartbeat = 15 (allow missed heartbeats)
+
+    4. Tune poll interval
+       max.poll.interval.ms=300000
+       Ensure processing completes within this time
+
+APPLICATION DESIGN:
+
+    1. Implement ConsumerRebalanceListener
+       - Commit offsets in onPartitionsRevoked()
+       - Initialize state in onPartitionsAssigned()
+
+    2. Keep processing fast
+       - Avoid long-running operations in poll loop
+       - Use async processing if needed
+
+    3. Handle duplicate processing
+       - Rebalance may cause reprocessing
+       - Design for idempotency
+
+    4. Minimize local state
+       - Less state = faster recovery after rebalance
+       - Use external state stores if possible
+
+================================================================================
+9. REBALANCE MONITORING
+================================================================================
+
+KEY METRICS:
+
+    Consumer Metrics:
+        - rebalance-latency-avg: Average rebalance duration
+        - rebalance-latency-max: Max rebalance duration
+        - rebalance-total: Total number of rebalances
+        - rebalance-rate-per-hour: Rebalance frequency
+
+    Group Coordinator Metrics:
+        - group-count: Number of consumer groups
+        - rebalance-count: Rebalances per group
+
+LOGGING:
+
+    Enable debug logging for rebalance issues:
+        log4j.logger.org.apache.kafka.clients.consumer=DEBUG
+
+    Look for:
+        - "Revoking previously assigned partitions"
+        - "Setting newly assigned partitions"
+        - "Member failed to send heartbeat"
+
+CLI MONITORING:
+
+    Check group state:
+        kafka-consumer-groups.sh --describe \
+            --group <group-id> \
+            --bootstrap-server localhost:9092 \
+            --state
+
+    States:
+        - Stable: Normal operation
+        - PreparingRebalance: Rebalance starting
+        - CompletingRebalance: Rebalance in progress
+        - Empty: No active consumers
+        - Dead: Group being removed
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++--------------------+--------------------------------------------------------+
+| Term               | Description                                            |
++--------------------+--------------------------------------------------------+
+| Rebalance          | Redistributing partitions among group members          |
+| Group Coordinator  | Broker managing the consumer group                     |
+| Group Leader       | Consumer that calculates partition assignment          |
+| Eager Protocol     | Stop-the-world rebalance (all partitions revoked)      |
+| Cooperative Protocol| Incremental rebalance (only moved partitions revoked) |
+| Static Membership  | Fixed consumer identity to avoid unnecessary rebalances|
++--------------------+--------------------------------------------------------+
+
+REBALANCE TRIGGERS:
+    - Consumer joins/leaves/crashes
+    - max.poll.interval.ms exceeded
+    - Partition count changes
+    - New topic matches subscription pattern
+
+ASSIGNMENT STRATEGIES (Best to Worst):
+    1. CooperativeStickyAssignor (recommended)
+    2. StickyAssignor
+    3. RoundRobinAssignor
+    4. RangeAssignor
+
+MINIMIZE REBALANCE IMPACT:
+    1. Use CooperativeStickyAssignor
+    2. Use Static Membership (group.instance.id)
+    3. Implement ConsumerRebalanceListener
+    4. Tune heartbeat/session/poll timeouts
+    5. Keep processing fast
+
+================================================================================

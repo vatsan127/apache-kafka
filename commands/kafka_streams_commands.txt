@@ -1,0 +1,241 @@
+================================================================================
+                    KAFKA STREAMS CLI COMMANDS REFERENCE
+================================================================================
+
+================================================================================
+APPLICATION RESET TOOL
+================================================================================
+
+Reset Kafka Streams Application State:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092
+
+    # This tool:
+    # - Resets input topic offsets to earliest
+    # - Deletes internal topics (changelogs, repartition topics)
+    # - Allows reprocessing from beginning
+
+Reset with Specific Input Topics:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --input-topics topic1,topic2
+
+Reset with Intermediate Topics:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --intermediate-topics repartition-topic
+
+Reset to Specific DateTime:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --to-datetime 2024-01-01T00:00:00.000
+
+Reset to Earliest:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --to-earliest
+
+Reset to Latest:
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --to-latest
+
+Dry Run (preview without executing):
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --dry-run
+
+Force Reset (skip consumer group check):
+    kafka-streams-application-reset.sh \
+        --application-id <app-id> \
+        --bootstrap-servers localhost:9092 \
+        --force
+
+IMPORTANT: Stop all application instances before running reset!
+
+================================================================================
+INTERNAL TOPICS MANAGEMENT
+================================================================================
+
+Kafka Streams creates internal topics automatically:
+    - <app-id>-<store-name>-changelog   (state store backups)
+    - <app-id>-<store-name>-repartition (repartitioning data)
+
+List Internal Topics:
+    kafka-topics.sh --list \
+        --bootstrap-server localhost:9092 | grep <app-id>
+
+Describe Changelog Topic:
+    kafka-topics.sh --describe \
+        --topic <app-id>-<store-name>-changelog \
+        --bootstrap-server localhost:9092
+
+Delete Internal Topics (after app shutdown):
+    kafka-topics.sh --delete \
+        --topic <app-id>-<store-name>-changelog \
+        --bootstrap-server localhost:9092
+
+View Changelog Topic Config:
+    kafka-configs.sh --describe \
+        --topic <app-id>-<store-name>-changelog \
+        --bootstrap-server localhost:9092
+
+    # Changelog topics are typically:
+    # - cleanup.policy=compact
+    # - retention.ms=-1 (infinite)
+
+================================================================================
+CONSUMER GROUP MONITORING
+================================================================================
+
+Kafka Streams uses consumer groups internally (group.id = application.id)
+
+List Streams Consumer Groups:
+    kafka-consumer-groups.sh --list \
+        --bootstrap-server localhost:9092 | grep <app-id>
+
+Describe Streams Application Group:
+    kafka-consumer-groups.sh --describe \
+        --group <app-id> \
+        --bootstrap-server localhost:9092
+
+Check Application Lag:
+    kafka-consumer-groups.sh --describe \
+        --group <app-id> \
+        --bootstrap-server localhost:9092
+
+    # Output shows LAG column - messages behind
+
+Check Group State:
+    kafka-consumer-groups.sh --describe \
+        --group <app-id> \
+        --bootstrap-server localhost:9092 \
+        --state
+
+    # States: Stable, Empty, Dead, PreparingRebalance, CompletingRebalance
+
+List Members (Running Instances):
+    kafka-consumer-groups.sh --describe \
+        --group <app-id> \
+        --bootstrap-server localhost:9092 \
+        --members
+
+    # Shows all running application instances
+
+Show Member Assignments:
+    kafka-consumer-groups.sh --describe \
+        --group <app-id> \
+        --bootstrap-server localhost:9092 \
+        --members --verbose
+
+    # Shows which partitions assigned to each instance
+
+================================================================================
+STATE STORE INSPECTION
+================================================================================
+
+Local State Directory:
+    # Default location: /tmp/kafka-streams/<app-id>
+    # Configured via: state.dir property
+
+    ls -la /tmp/kafka-streams/<app-id>/
+
+View RocksDB State Store Files:
+    ls -la /tmp/kafka-streams/<app-id>/<task-id>/<store-name>/
+
+Clear Local State (force rebuild from changelog):
+    rm -rf /tmp/kafka-streams/<app-id>/
+
+    # On restart, state rebuilds from changelog topics
+
+================================================================================
+METRICS AND MONITORING
+================================================================================
+
+JMX Metrics (enable in application):
+    # Add to Java options:
+    -Dcom.sun.management.jmxremote
+    -Dcom.sun.management.jmxremote.port=9999
+    -Dcom.sun.management.jmxremote.authenticate=false
+    -Dcom.sun.management.jmxremote.ssl=false
+
+Key Kafka Streams Metrics:
+    kafka.streams:type=stream-metrics,client-id=*
+        - commit-latency-avg
+        - commit-latency-max
+        - poll-latency-avg
+        - process-latency-avg
+
+    kafka.streams:type=stream-task-metrics,client-id=*,task-id=*
+        - process-rate
+        - process-total
+        - commit-rate
+
+    kafka.streams:type=stream-processor-node-metrics
+        - process-rate
+        - forward-rate
+
+================================================================================
+DEBUGGING COMMANDS
+================================================================================
+
+Check Input Topic Offsets:
+    kafka-run-class.sh kafka.tools.GetOffsetShell \
+        --broker-list localhost:9092 \
+        --topic <input-topic>
+
+Check Output Topic Messages:
+    kafka-console-consumer.sh \
+        --topic <output-topic> \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true \
+        --property print.timestamp=true \
+        --max-messages 10
+
+Verify Changelog Content:
+    kafka-console-consumer.sh \
+        --topic <app-id>-<store-name>-changelog \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true \
+        --max-messages 10
+
+Check Repartition Topic:
+    kafka-console-consumer.sh \
+        --topic <app-id>-<operation>-repartition \
+        --bootstrap-server localhost:9092 \
+        --from-beginning \
+        --property print.key=true \
+        --max-messages 10
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++------------------------+----------------------------------------------------+
+| Operation              | Command                                            |
++------------------------+----------------------------------------------------+
+| Reset application      | kafka-streams-application-reset.sh --application-id|
+| List internal topics   | kafka-topics.sh --list | grep <app-id>             |
+| Check app lag          | kafka-consumer-groups.sh --describe --group <app-id>|
+| Check app state        | kafka-consumer-groups.sh --describe --state        |
+| List running instances | kafka-consumer-groups.sh --members                 |
+| Clear local state      | rm -rf /tmp/kafka-streams/<app-id>/                |
+| View changelog         | kafka-console-consumer.sh --topic <changelog>      |
++------------------------+----------------------------------------------------+
+
+RESET CHECKLIST:
+    1. Stop ALL application instances
+    2. Run kafka-streams-application-reset.sh
+    3. (Optional) Delete local state directories
+    4. Restart application instances
+
+================================================================================

@@ -1,16 +1,18 @@
-Kafka Learning Topics
-=====================
+Kafka Learning Roadmap
+======================
 
 Completed:
-[x] 1. Core Concepts Deep Dive - Topics, Partitions, Offsets, Segments, Replication in detail
-[x] 2. Producers - Configuration, partitioning strategies, acks, retries, idempotence
-[x] 7. Kafka Streams - Stream processing library
+[x] 01. Installation - Kafka 3.9.0 KRaft mode setup on Ubuntu
+[x] 02. Fundamentals - Architecture, use cases, components
+[x] 03. Core Concepts - Topics, Partitions, Offsets, Segments, Replication
+[x] 04. Performance - Disk storage, sequential I/O, zero-copy, batching
+[x] 05. Producers - Configuration, partitioning, acks, retries, idempotence
+[x] 06. Consumers - Consumer groups, offset management, poll loop, patterns
+[x] 07. Rebalancing - Protocols, assignment strategies, static membership
+[x] 08. Consumer Lag - Monitoring, causes, alerting, remediation
+[x] 09. Rate Limiting - Producer/consumer throttling, quotas, multi-tenant
+[x] 10. Kafka Connect - Source/sink connectors, transforms, REST API
+[x] 11. Kafka Streams - KStream, KTable, topology, windowing, state stores
 
 Pending:
-[ ] 3. Consumers - Consumer groups, offset management, rebalancing, assignment strategies
-[ ] 4. Kafka Rebalance
-[ ] 5. Kafka Lag
-[ ] 6. Rate limiting - Producer and consumer throttling
-[ ] 8. KTable - Changelog streams as tables
-[ ] 9. Kafka Connect - Data integration framework
-[ ] 10. Kafka with Spring Boot - Spring Kafka, configuration, templates, listeners
+[ ] 12. Spring Boot - Spring Kafka, templates, listeners, configuration

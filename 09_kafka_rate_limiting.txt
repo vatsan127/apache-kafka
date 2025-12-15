@@ -1,0 +1,412 @@
+================================================================================
+                         KAFKA RATE LIMITING & QUOTAS
+================================================================================
+
+================================================================================
+1. WHAT IS RATE LIMITING IN KAFKA?
+================================================================================
+
+DEFINITION:
+    - Mechanism to control resource usage by clients
+    - Prevents single client from overwhelming the cluster
+    - Ensures fair resource distribution among clients
+
+WHY RATE LIMITING?
+    - Protect cluster from misbehaving clients
+    - Ensure multi-tenant fairness
+    - Prevent cascading failures
+    - Maintain consistent performance
+
+WHAT CAN BE LIMITED?
+    - Producer throughput (bytes/second)
+    - Consumer throughput (bytes/second)
+    - Request rate (requests/second)
+    - Controller mutation rate (partition changes/second)
+
+================================================================================
+2. QUOTA TYPES
+================================================================================
+
+PRODUCER QUOTAS:
+
+    producer_byte_rate:
+        - Bytes per second a producer can send
+        - Applies to all topics combined
+        - Default: No limit (unlimited)
+
+    Example:
+        Client "app-producer" limited to 10 MB/s
+        If exceeded → requests throttled
+
+CONSUMER QUOTAS:
+
+    consumer_byte_rate:
+        - Bytes per second a consumer can fetch
+        - Applies to all partitions combined
+        - Default: No limit (unlimited)
+
+    Example:
+        Client "app-consumer" limited to 20 MB/s
+        If exceeded → fetch requests delayed
+
+REQUEST QUOTAS:
+
+    request_percentage:
+        - Percentage of I/O threads client can use
+        - Controls request processing capacity
+        - Default: No limit
+
+    Example:
+        Client limited to 25% request capacity
+        Prevents monopolizing broker resources
+
+CONTROLLER MUTATION QUOTAS:
+
+    controller_mutation_rate:
+        - Rate of partition mutations (create, delete, alter)
+        - Protects controller from overload
+        - Default: No limit
+
+    Example:
+        Limit topic creation to 10 partitions/second
+        Prevents runaway automation scripts
+
+================================================================================
+3. QUOTA CONFIGURATION
+================================================================================
+
+QUOTA LEVELS (Priority Order):
+
+    1. User + Client ID (highest priority)
+       - Most specific
+       - user="alice", client-id="app1"
+
+    2. User only
+       - Applies to all clients for a user
+       - user="alice"
+
+    3. Client ID only
+       - Applies to all users with this client ID
+       - client-id="app1"
+
+    4. Default User + Default Client ID
+       - Fallback defaults
+       - user="<default>", client-id="<default>"
+
+SETTING QUOTAS VIA CLI:
+
+    Set Producer Quota (bytes/second):
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=10485760' \
+            --entity-type users --entity-name alice
+
+    Set Consumer Quota:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'consumer_byte_rate=20971520' \
+            --entity-type users --entity-name alice
+
+    Set Both for Client ID:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=5242880,consumer_byte_rate=10485760' \
+            --entity-type clients --entity-name my-app
+
+    Set for User + Client ID:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=10485760' \
+            --entity-type users --entity-name alice \
+            --entity-type clients --entity-name my-app
+
+    Set Default Quota:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=1048576' \
+            --entity-type users --entity-default
+
+VIEWING QUOTAS:
+
+    Describe User Quota:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --describe \
+            --entity-type users --entity-name alice
+
+    Describe All User Quotas:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --describe \
+            --entity-type users
+
+    Describe Client Quota:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --describe \
+            --entity-type clients --entity-name my-app
+
+REMOVING QUOTAS:
+
+    Remove Specific Quota:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --delete-config 'producer_byte_rate' \
+            --entity-type users --entity-name alice
+
+================================================================================
+4. HOW THROTTLING WORKS
+================================================================================
+
+THROTTLING MECHANISM:
+
+    1. Client sends produce/fetch request
+    2. Broker tracks byte rate per client
+    3. If rate exceeds quota:
+       - Broker calculates throttle time
+       - Response delayed by throttle time
+       - Client receives throttle_time_ms in response
+
+    Timeline:
+    ┌────────────────────────────────────────────────────────────────────┐
+    │ Client Request → Broker Processing → Throttle Delay → Response    │
+    │                                      (if over quota)              │
+    └────────────────────────────────────────────────────────────────────┘
+
+THROTTLE TIME CALCULATION:
+
+    throttle_time = (observed_rate - quota_rate) / quota_rate × window
+
+    Example:
+        Quota: 10 MB/s
+        Observed: 15 MB/s
+        Window: 1 second
+
+        throttle_time = (15 - 10) / 10 × 1 = 0.5 seconds
+
+CLIENT BEHAVIOR WHEN THROTTLED:
+
+    Producer:
+        - Receives throttle_time_ms in response
+        - Should wait before next request
+        - KafkaProducer handles automatically
+
+    Consumer:
+        - Fetch response delayed
+        - Consumer sees slower throughput
+        - Appears as increased fetch latency
+
+================================================================================
+5. BROKER CONFIGURATION
+================================================================================
+
+QUOTA SETTINGS IN server.properties:
+
+    # Default quotas (can be overridden per user/client)
+    quota.producer.default=10485760
+    quota.consumer.default=20971520
+
+    # Quota window settings
+    quota.window.num=11
+    quota.window.size.seconds=1
+
+    # Request quota settings
+    request.percentage=25
+
+DYNAMIC CONFIGURATION:
+
+    Quotas can be changed without broker restart:
+        - Use kafka-configs.sh
+        - Changes apply immediately
+        - Stored in ZooKeeper/KRaft metadata
+
+================================================================================
+6. MONITORING THROTTLING
+================================================================================
+
+JMX METRICS:
+
+    Broker Metrics:
+        kafka.server:type=BrokerTopicMetrics,name=BytesInPerSec
+        kafka.server:type=BrokerTopicMetrics,name=BytesOutPerSec
+
+    Quota Metrics:
+        kafka.server:type=Request,name=ThrottleTimeMs
+        kafka.server:type=ClientQuotaManager,name=throttle-time
+
+    Per-Client Metrics:
+        kafka.server:type=Produce,client-id=*,name=throttle-time
+        kafka.server:type=Fetch,client-id=*,name=throttle-time
+
+CLIENT-SIDE METRICS:
+
+    Producer:
+        produce-throttle-time-avg
+        produce-throttle-time-max
+
+    Consumer:
+        fetch-throttle-time-avg
+        fetch-throttle-time-max
+
+CLI MONITORING:
+
+    Check if clients are throttled:
+        - Monitor broker logs for throttle messages
+        - Check client metrics for non-zero throttle times
+
+================================================================================
+7. PRODUCER RATE LIMITING STRATEGIES
+================================================================================
+
+CLIENT-SIDE RATE LIMITING:
+
+    Why Client-Side?
+        - More responsive than broker throttling
+        - Avoids request failures
+        - Better user experience
+
+    Using Rate Limiter (Guava):
+        RateLimiter rateLimiter = RateLimiter.create(1000); // 1000 records/sec
+
+        for (Record record : records) {
+            rateLimiter.acquire();  // Blocks if rate exceeded
+            producer.send(record);
+        }
+
+    Using Semaphore:
+        - Limit concurrent in-flight requests
+        - max.in.flight.requests.per.connection=5
+
+PRODUCER CONFIGURATION:
+
+    Batch Settings (indirect rate control):
+        linger.ms=100              // Wait for batch
+        batch.size=65536           // 64KB batches
+        buffer.memory=33554432     // 32MB buffer
+
+    If buffer full → blocks or throws exception
+
+BACKPRESSURE HANDLING:
+
+    When producer is throttled:
+        1. Records accumulate in buffer
+        2. send() may block (if buffer full)
+        3. Eventually throws BufferExhaustedException
+
+    Solutions:
+        - Increase buffer.memory
+        - Slow down production rate
+        - Use callbacks to detect throttling
+
+================================================================================
+8. CONSUMER RATE LIMITING STRATEGIES
+================================================================================
+
+CLIENT-SIDE APPROACHES:
+
+    1. Pause/Resume:
+        - Pause partitions when processing slow
+        - Resume when caught up
+
+        if (processingBacklogged()) {
+            consumer.pause(consumer.assignment());
+        } else {
+            consumer.resume(consumer.assignment());
+        }
+
+    2. Limit Poll Records:
+        max.poll.records=100  // Fewer records per poll
+
+    3. Process with Rate Limiter:
+        RateLimiter rateLimiter = RateLimiter.create(500); // 500 records/sec
+
+        for (ConsumerRecord record : records) {
+            rateLimiter.acquire();
+            process(record);
+        }
+
+FETCH CONFIGURATION:
+
+    fetch.max.bytes=52428800       // Max per fetch
+    max.partition.fetch.bytes=1048576  // Max per partition
+    fetch.max.wait.ms=500          // Max wait time
+
+================================================================================
+9. MULTI-TENANT SCENARIOS
+================================================================================
+
+SCENARIO: SHARED CLUSTER
+
+    Multiple teams sharing Kafka cluster
+    Need fair resource allocation
+
+    Setup:
+        Team A: producer_byte_rate=50MB/s, consumer_byte_rate=100MB/s
+        Team B: producer_byte_rate=20MB/s, consumer_byte_rate=50MB/s
+        Default: producer_byte_rate=5MB/s, consumer_byte_rate=10MB/s
+
+    Commands:
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=52428800,consumer_byte_rate=104857600' \
+            --entity-type users --entity-name team-a
+
+        kafka-configs.sh --bootstrap-server localhost:9092 \
+            --alter --add-config 'producer_byte_rate=20971520,consumer_byte_rate=52428800' \
+            --entity-type users --entity-name team-b
+
+SCENARIO: PRIORITY CLIENTS
+
+    Critical applications get higher quotas
+    Batch jobs get lower quotas
+
+    Setup:
+        Critical: producer_byte_rate=100MB/s
+        Normal: producer_byte_rate=20MB/s
+        Batch: producer_byte_rate=5MB/s
+
+SCENARIO: PROTECT AGAINST RUNAWAY CLIENTS
+
+    Default restrictive quotas
+    Increase for known good clients
+
+    Setup:
+        Default: producer_byte_rate=1MB/s (restrictive)
+        Known clients: Higher limits as needed
+
+APPLICATION-LEVEL RATE LIMITING:
+
+    Spring Kafka:
+        - Use RateLimiter (Guava/Resilience4j) before producer.send()
+        - Configure ProducerFactory with rate limiting interceptor
+        - See 12_kafka_spring_boot.txt for details
+
+    Plain Java:
+        - Guava RateLimiter: rateLimiter.acquire() before send
+        - Semaphore: limit concurrent in-flight requests
+        - Custom: token bucket or sliding window implementation
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+QUOTA TYPES:
+    producer_byte_rate    - Producer throughput limit (bytes/sec)
+    consumer_byte_rate    - Consumer throughput limit (bytes/sec)
+    request_percentage    - Request processing capacity (%)
+
+CLI COMMANDS:
+    # Set quota
+    kafka-configs.sh --alter --add-config 'producer_byte_rate=10485760' \
+        --entity-type users --entity-name <user>
+
+    # View quota
+    kafka-configs.sh --describe --entity-type users --entity-name <user>
+
+    # Remove quota
+    kafka-configs.sh --alter --delete-config 'producer_byte_rate' \
+        --entity-type users --entity-name <user>
+
+COMMON VALUES:
+    1 MB/s  = 1048576
+    10 MB/s = 10485760
+    50 MB/s = 52428800
+    100 MB/s = 104857600
+
+ENTITY TYPES:
+    --entity-type users --entity-name <username>
+    --entity-type clients --entity-name <client-id>
+    --entity-type users --entity-default (default for all users)
+    --entity-type clients --entity-default (default for all clients)
+
+================================================================================

@@ -519,51 +519,7 @@ IMPORTANT PROPERTIES:
     props.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 10 * 1024 * 1024);
 
 ================================================================================
-10. BASIC APPLICATION STRUCTURE
-================================================================================
-
-    import org.apache.kafka.streams.*;
-    import org.apache.kafka.streams.kstream.*;
-    import org.apache.kafka.common.serialization.Serdes;
-    import java.util.Properties;
-
-    public class WordCountApp {
-        public static void main(String[] args) {
-
-            // 1. Configuration
-            Properties props = new Properties();
-            props.put(StreamsConfig.APPLICATION_ID_CONFIG, "wordcount-app");
-            props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
-            props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG,
-                      Serdes.String().getClass());
-            props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG,
-                      Serdes.String().getClass());
-
-            // 2. Build Topology
-            StreamsBuilder builder = new StreamsBuilder();
-
-            KStream<String, String> textLines = builder.stream("input-topic");
-
-            KTable<String, Long> wordCounts = textLines
-                .flatMapValues(line -> Arrays.asList(line.toLowerCase().split("\\W+")))
-                .groupBy((key, word) -> word)
-                .count(Materialized.as("counts-store"));
-
-            wordCounts.toStream().to("output-topic",
-                Produced.with(Serdes.String(), Serdes.Long()));
-
-            // 3. Create and Start Streams
-            KafkaStreams streams = new KafkaStreams(builder.build(), props);
-
-            // Graceful shutdown
-            Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
-
-            streams.start();
-        }
-    }
-
-================================================================================
-11. SCALING AND PARALLELISM
+10. SCALING AND PARALLELISM
 ================================================================================
 
 TASKS:

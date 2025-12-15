@@ -10,10 +10,18 @@ This is a **learning/study repository** for Apache Kafka - a collection of educa
 
 - `01_kafka_installation_ubuntu.txt` - Kafka 3.9.0 KRaft mode installation on Ubuntu
 - `02_kafka_fundamentals.txt` - Introduction to Kafka architecture and use cases
-- `03_kafka_disk_storage_performance.txt` - Performance internals (sequential I/O, zero-copy, batching)
-- `04_kafka_core_concepts.txt` - Deep dive into Topics, Partitions, Offsets, Segments, Replication
+- `03_kafka_core_concepts.txt` - Topics, Partitions, Offsets, Segments, Replication
+- `04_kafka_performance.txt` - Disk storage, sequential I/O, zero-copy, batching
 - `05_kafka_producers.txt` - Producer configuration, partitioning, idempotence
-- `NextTopics` - Learning progress tracker
+- `06_kafka_consumers.txt` - Consumer groups, offsets, poll loop, patterns
+- `07_kafka_rebalancing.txt` - Rebalance protocols, assignment strategies, static membership
+- `08_kafka_lag.txt` - Consumer lag monitoring, causes, alerting, remediation
+- `09_kafka_rate_limiting.txt` - Quotas, throttling, multi-tenant scenarios
+- `10_kafka_connect.txt` - Source/sink connectors, transforms, REST API
+- `11_kafka_streams.txt` - KStream, KTable, topology, windowing, state stores
+- `kafka_commands.txt` - CLI commands reference (topics, producers, consumers, offsets)
+- `kafka_streams_commands.txt` - Kafka Streams CLI (reset, internal topics, state stores)
+- `NextTopics` - Learning roadmap and progress tracker
 
 ## Kafka Environment (as documented)
 
@@ -47,5 +55,5 @@ kafka-consumer-groups.sh --describe --group <name> --bootstrap-server localhost:
 
 ## Learning Progress
 
-Completed: Core Concepts, Producers
-Pending: Consumers, Rebalance, Lag, Rate Limiting, Kafka Streams, KTable, Kafka Connect, Spring Boot Integration
+Completed: Installation, Fundamentals, Core Concepts, Performance, Producers, Consumers, Rebalancing, Consumer Lag, Rate Limiting, Kafka Connect, Kafka Streams
+Pending: Spring Boot

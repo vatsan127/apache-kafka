@@ -1,0 +1,537 @@
+================================================================================
+                              KAFKA CONSUMERS
+================================================================================
+
+================================================================================
+1. WHAT IS A KAFKA CONSUMER?
+================================================================================
+
+DEFINITION:
+    - Client application that reads/subscribes to messages from Kafka topics
+    - Pulls data from brokers (poll-based, not push)
+    - Tracks position using offsets
+    - Can be part of a consumer group for parallel processing
+
+KEY CHARACTERISTICS:
+    - Pull model (consumer controls the rate)
+    - At-least-once delivery by default
+    - Offset-based tracking (resume from where left off)
+    - Horizontal scaling via consumer groups
+    - Supports both subscribe (dynamic) and assign (manual) modes
+
+CONSUMER WORKFLOW:
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                         KAFKA CLUSTER                                │
+    │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
+    │  │ Partition 0 │  │ Partition 1 │  │ Partition 2 │                  │
+    │  │ [0,1,2,3,4] │  │ [0,1,2,3]   │  │ [0,1,2]     │                  │
+    │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                  │
+    └─────────┼────────────────┼────────────────┼─────────────────────────┘
+              │                │                │
+              │    poll()      │                │
+              ▼                ▼                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                         CONSUMER                                     │
+    │  ┌───────────────────────────────────────────────────────────────┐  │
+    │  │ Records Buffer: [msg1, msg2, msg3, msg4, ...]                 │  │
+    │  └───────────────────────────────────────────────────────────────┘  │
+    │                              │                                       │
+    │                              ▼ process()                             │
+    │                    ┌─────────────────────┐                           │
+    │                    │ Application Logic   │                           │
+    │                    └─────────────────────┘                           │
+    └─────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+2. CONSUMER GROUPS
+================================================================================
+
+WHAT IS A CONSUMER GROUP?
+    - Logical grouping of consumers sharing the same group.id
+    - Work together to consume from topic(s)
+    - Each partition consumed by exactly ONE consumer in the group
+    - Enables parallel processing and fault tolerance
+
+WHY CONSUMER GROUPS?
+    - Scalability: Add consumers to increase throughput
+    - Fault tolerance: If one consumer fails, others take over
+    - Load balancing: Partitions distributed across consumers
+    - Independent processing: Different groups process same data independently
+
+PARTITION ASSIGNMENT RULES:
+
+    Rule 1: One partition → One consumer (within a group)
+    Rule 2: One consumer → Zero or more partitions
+    Rule 3: Max useful consumers = Number of partitions
+
+EXAMPLE SCENARIOS:
+
+    Topic: 6 partitions, Consumer Group: "order-processors"
+
+    Scenario A: 3 Consumers
+    ┌──────────────────────────────────────────────────────────┐
+    │  Consumer 1: [P0, P1]                                    │
+    │  Consumer 2: [P2, P3]                                    │
+    │  Consumer 3: [P4, P5]                                    │
+    │  Result: Balanced distribution                           │
+    └──────────────────────────────────────────────────────────┘
+
+    Scenario B: 6 Consumers
+    ┌──────────────────────────────────────────────────────────┐
+    │  Consumer 1: [P0]    Consumer 4: [P3]                    │
+    │  Consumer 2: [P1]    Consumer 5: [P4]                    │
+    │  Consumer 3: [P2]    Consumer 6: [P5]                    │
+    │  Result: Maximum parallelism                             │
+    └──────────────────────────────────────────────────────────┘
+
+    Scenario C: 8 Consumers
+    ┌──────────────────────────────────────────────────────────┐
+    │  Consumer 1: [P0]    Consumer 5: [P4]                    │
+    │  Consumer 2: [P1]    Consumer 6: [P5]                    │
+    │  Consumer 3: [P2]    Consumer 7: [IDLE]  ← No partition  │
+    │  Consumer 4: [P3]    Consumer 8: [IDLE]  ← No partition  │
+    │  Result: 2 consumers idle (wasted resources)             │
+    └──────────────────────────────────────────────────────────┘
+
+MULTIPLE CONSUMER GROUPS:
+
+    Same topic can be consumed by multiple groups independently:
+
+    Topic: "orders" (3 partitions)
+
+    ┌─────────────────────────────────┐
+    │ Group: "analytics"              │  ← Processes all messages
+    │   Consumer A: [P0, P1, P2]      │     for analytics
+    └─────────────────────────────────┘
+
+    ┌─────────────────────────────────┐
+    │ Group: "notifications"          │  ← Processes all messages
+    │   Consumer B: [P0]              │     for sending notifications
+    │   Consumer C: [P1, P2]          │
+    └─────────────────────────────────┘
+
+    Both groups receive ALL messages independently!
+
+================================================================================
+3. PARTITION ASSIGNMENT STRATEGIES
+================================================================================
+
+Configured via: partition.assignment.strategy
+
+RANGE ASSIGNOR (default):
+    - Assigns partitions per topic in ranges
+    - Can cause imbalance with multiple topics
+
+    Algorithm:
+        1. Sort partitions and consumers
+        2. Divide partitions by consumer count
+        3. Assign ranges to consumers
+
+    Example (2 topics, 3 partitions each, 2 consumers):
+        Topic A: [P0, P1, P2]
+        Topic B: [P0, P1, P2]
+
+        Consumer 1: [A-P0, A-P1, B-P0, B-P1]  ← 4 partitions
+        Consumer 2: [A-P2, B-P2]              ← 2 partitions
+
+        Problem: Imbalanced!
+
+ROUND ROBIN ASSIGNOR:
+    - Assigns partitions one by one in round-robin fashion
+    - Better balance across multiple topics
+
+    Same example with Round Robin:
+        Consumer 1: [A-P0, A-P2, B-P1]  ← 3 partitions
+        Consumer 2: [A-P1, B-P0, B-P2]  ← 3 partitions
+
+        Result: Balanced!
+
+    Config:
+        partition.assignment.strategy=
+            org.apache.kafka.clients.consumer.RoundRobinAssignor
+
+STICKY ASSIGNOR:
+    - Balanced like Round Robin
+    - Minimizes partition movement during rebalance
+    - Preserves existing assignments when possible
+
+    Benefits:
+        - Faster rebalances
+        - Less state rebuilding
+        - Better for stateful consumers
+
+    Config:
+        partition.assignment.strategy=
+            org.apache.kafka.clients.consumer.StickyAssignor
+
+COOPERATIVE STICKY ASSIGNOR:
+    - Incremental rebalancing (doesn't stop all consumers)
+    - Only affected partitions are reassigned
+    - Consumers keep processing unaffected partitions
+
+    Config:
+        partition.assignment.strategy=
+            org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+    Comparison:
+    ┌──────────────────────────────────────────────────────────────────┐
+    │ Eager Rebalance (Range, RoundRobin, Sticky):                     │
+    │   1. ALL consumers stop                                          │
+    │   2. ALL partitions revoked                                      │
+    │   3. Reassignment calculated                                     │
+    │   4. Partitions assigned                                         │
+    │   5. Consumers resume                                            │
+    │   → Complete pause during rebalance!                             │
+    └──────────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────────────┐
+    │ Cooperative Rebalance (CooperativeStickyAssignor):               │
+    │   1. Only affected partitions revoked                            │
+    │   2. Unaffected consumers keep processing                        │
+    │   3. Incremental reassignment                                    │
+    │   → Minimal disruption!                                          │
+    └──────────────────────────────────────────────────────────────────┘
+
+RECOMMENDATION:
+    Use CooperativeStickyAssignor for production workloads
+
+================================================================================
+4. OFFSET MANAGEMENT
+================================================================================
+
+WHAT IS AN OFFSET?
+    - Sequential ID for each message in a partition
+    - Unique per partition (not across topic)
+    - Consumer tracks: "I've processed up to offset X"
+
+OFFSET TYPES:
+
+    Current Offset:
+        - Next offset consumer will read
+        - Managed internally by consumer
+
+    Committed Offset:
+        - Last successfully processed offset (persisted to Kafka)
+        - Stored in internal topic: __consumer_offsets
+        - Used for recovery after restart/crash
+
+    Log End Offset (LEO):
+        - Latest offset in the partition
+        - LEO - Committed Offset = Lag
+
+    Visualization:
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ Partition: [0] [1] [2] [3] [4] [5] [6] [7] [8] [9] [10]        │
+    │                     ↑           ↑                   ↑          │
+    │              Committed    Current Offset       Log End         │
+    │               Offset          (next read)      Offset          │
+    │                                                                │
+    │            Lag = 10 - 4 = 6 messages behind                    │
+    └─────────────────────────────────────────────────────────────────┘
+
+AUTO COMMIT (default):
+    - Kafka automatically commits offsets periodically
+    - enable.auto.commit=true (default)
+    - auto.commit.interval.ms=5000 (default: 5 seconds)
+
+    Pros:
+        - Simple, no code changes
+        - Good for non-critical workloads
+
+    Cons:
+        - May lose messages (crash before processing complete)
+        - May duplicate messages (crash after processing, before commit)
+
+    Timeline (potential data loss):
+    ┌────────────────────────────────────────────────────────────────┐
+    │ T0: Poll returns [msg1, msg2, msg3]                            │
+    │ T1: Process msg1 ✓                                             │
+    │ T2: Process msg2 ✓                                             │
+    │ T3: CRASH! (before auto-commit at T5)                          │
+    │                                                                │
+    │ On restart: Consumer re-reads msg1, msg2 (duplicates)          │
+    └────────────────────────────────────────────────────────────────┘
+
+MANUAL COMMIT:
+    - Application controls when to commit
+    - Set enable.auto.commit=false
+
+    Synchronous Commit: consumer.commitSync()
+        - Blocks until commit succeeds or fails
+        - Retries on recoverable errors
+        - Slower but safer
+
+    Asynchronous Commit: consumer.commitAsync()
+        - Non-blocking, returns immediately
+        - No retries (could commit older offset)
+        - Faster but less safe
+        - Can pass callback for error handling
+
+    Commit Specific Offsets: consumer.commitSync(offsets)
+        - Pass Map<TopicPartition, OffsetAndMetadata>
+        - Useful for fine-grained control
+        - Offset should be lastProcessedOffset + 1
+
+COMMIT STRATEGIES:
+
+    1. Commit After Each Message (safest, slowest):
+       - Call commitSync() after processing each record
+       - Maximum safety, minimum throughput
+
+    2. Commit After Each Batch (balanced):
+       - Call commitSync() after processing all records from poll()
+       - Good balance of safety and performance
+
+    3. Commit Every N Records:
+       - Call commitAsync() every N records (e.g., every 100)
+       - Higher throughput, acceptable risk
+
+    4. Commit on Rebalance:
+       - Use ConsumerRebalanceListener
+       - onPartitionsRevoked() → commitSync() before losing partitions
+       - onPartitionsAssigned() → initialize state for new partitions
+
+================================================================================
+5. CONSUMER CONFIGURATION
+================================================================================
+
+ESSENTIAL PROPERTIES (Required):
+
+    bootstrap.servers          - Broker addresses (e.g., localhost:9092)
+    group.id                   - Consumer group name
+    key.deserializer           - Key deserializer class
+    value.deserializer         - Value deserializer class
+
+FETCH CONFIGURATION:
+
+    fetch.min.bytes (default: 1)
+        - Minimum data broker should return
+        - Higher value = fewer requests, higher latency
+
+    fetch.max.bytes (default: 50MB)
+        - Maximum data per fetch request
+
+    fetch.max.wait.ms (default: 500)
+        - Max time broker waits for fetch.min.bytes
+
+    max.partition.fetch.bytes (default: 1MB)
+        - Max data per partition per fetch
+
+    max.poll.records (default: 500)
+        - Max records returned per poll()
+
+SESSION AND HEARTBEAT:
+
+    session.timeout.ms (default: 45000)
+        - Time before consumer considered dead
+        - Must be within broker's min/max session timeout
+
+    heartbeat.interval.ms (default: 3000)
+        - Frequency of heartbeats to group coordinator
+        - Should be 1/3 of session.timeout.ms
+
+    max.poll.interval.ms (default: 300000 = 5 min)
+        - Max time between poll() calls
+        - Exceeded = consumer removed from group
+
+    Relationship:
+    ┌────────────────────────────────────────────────────────────────┐
+    │ heartbeat.interval.ms < session.timeout.ms < max.poll.interval │
+    │         3s            <        45s         <       300s        │
+    └────────────────────────────────────────────────────────────────┘
+
+OFFSET CONFIGURATION:
+
+    enable.auto.commit (default: true)
+        - Auto commit offsets periodically
+
+    auto.commit.interval.ms (default: 5000)
+        - Auto commit frequency
+
+    auto.offset.reset (default: latest)
+        - What to do when no committed offset exists
+        - Values:
+            earliest - Start from beginning of partition
+            latest   - Start from end (new messages only)
+            none     - Throw exception if no offset found
+
+ISOLATION LEVEL (for transactions):
+
+    isolation.level (default: read_uncommitted)
+        - read_uncommitted: Read all messages
+        - read_committed: Only read committed transactional messages
+
+================================================================================
+6. THE POLL LOOP
+================================================================================
+
+BASIC POLL LOOP:
+
+    1. Create consumer with properties
+    2. Subscribe to topic(s)
+    3. Loop: poll() → process records → repeat
+    4. Always close consumer in finally block
+
+    Key methods:
+        consumer.subscribe(topics)      - Subscribe to topics
+        consumer.poll(Duration)         - Fetch records (blocks up to timeout)
+        record.topic()                  - Get topic name
+        record.partition()              - Get partition number
+        record.offset()                 - Get offset
+        record.key() / record.value()   - Get key/value
+        consumer.close()                - Close and leave group
+
+POLL() BEHAVIOR:
+
+    poll(Duration timeout):
+        - Returns batch of records (or empty if none)
+        - Sends heartbeats to coordinator
+        - Handles rebalancing
+        - Triggers auto-commit (if enabled)
+        - Must be called regularly (within max.poll.interval.ms)
+
+    What happens during poll():
+    ┌────────────────────────────────────────────────────────────────┐
+    │ 1. Send heartbeat (if due)                                     │
+    │ 2. Check for rebalance, participate if needed                  │
+    │ 3. Fetch data from brokers (if buffer empty)                   │
+    │ 4. Auto-commit offsets (if enabled and due)                    │
+    │ 5. Return records from buffer                                  │
+    └────────────────────────────────────────────────────────────────┘
+
+GRACEFUL SHUTDOWN:
+
+    Steps:
+        1. Add shutdown hook that calls consumer.wakeup()
+        2. wakeup() causes poll() to throw WakeupException
+        3. Catch WakeupException (expected, ignore it)
+        4. In finally: commitSync() then close()
+
+    Key methods:
+        consumer.wakeup()     - Interrupt poll() from another thread
+        consumer.commitSync() - Final commit before exit
+        consumer.close()      - Leave group gracefully
+
+HANDLING SLOW PROCESSING:
+
+    Problem: Processing takes longer than max.poll.interval.ms
+    Result: Consumer removed from group, partitions reassigned
+
+    Solutions:
+
+    1. Increase max.poll.interval.ms (e.g., 600000 = 10 min)
+
+    2. Decrease max.poll.records (e.g., 100 instead of 500)
+
+    3. Process in separate thread with pause/resume:
+       - consumer.pause(partitions)  → Stop fetching new records
+       - Process records in background thread
+       - consumer.resume(partitions) → Resume fetching when done
+
+================================================================================
+7. SUBSCRIBE VS ASSIGN
+================================================================================
+
+SUBSCRIBE (Dynamic Assignment):
+    - Consumer group manages partition assignment
+    - Automatic rebalancing
+    - Can use topic patterns
+
+    Methods:
+        consumer.subscribe(List<String> topics)
+        consumer.subscribe(Pattern pattern)    // e.g., "order-.*"
+
+    Use when:
+        - Multiple consumers sharing work
+        - Need automatic failover
+        - Dynamic topic subscription
+
+ASSIGN (Manual Assignment):
+    - Consumer directly specifies partitions
+    - No consumer group coordination
+    - No rebalancing
+
+    Method:
+        consumer.assign(List<TopicPartition> partitions)
+
+    Use when:
+        - Need specific partition control
+        - Exactly-once with external system
+        - Simple single-consumer scenarios
+
+    Note: Can still use group.id for offset storage with assign()
+
+COMPARISON:
+
+    +---------------------+------------------+------------------+
+    | Feature             | subscribe()      | assign()         |
+    +---------------------+------------------+------------------+
+    | Partition assignment| Automatic        | Manual           |
+    | Rebalancing         | Yes              | No               |
+    | Consumer groups     | Required         | Optional         |
+    | Failover            | Automatic        | Manual           |
+    | Pattern matching    | Yes              | No               |
+    | Offset management   | Automatic        | Manual possible  |
+    +---------------------+------------------+------------------+
+
+================================================================================
+8. CONSUMER PATTERNS
+================================================================================
+
+PATTERN 1: SINGLE-THREADED CONSUMER (Simplest)
+    - One thread: poll → process each record → commit
+    - Easy offset management
+    - Limited throughput
+
+PATTERN 2: MULTI-THREADED PROCESSING
+    - Single consumer, thread pool for processing
+    - Submit each record to executor
+    - Caution: Offset management is tricky (may commit before processing done)
+
+PATTERN 3: ONE CONSUMER PER THREAD
+    - Each thread has its own KafkaConsumer instance
+    - Best isolation and simplicity
+    - Recommended for most use cases
+
+PATTERN 4: BATCH PROCESSING
+    - Accumulate records until batch size reached
+    - Process batch (e.g., bulk DB insert)
+    - Commit after batch completes
+    - Good for high-throughput sinks
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
++------------------------+--------------------------------------------------+
+| Concept                | Description                                      |
++------------------------+--------------------------------------------------+
+| Consumer Group         | Consumers sharing work on topic(s)               |
+| Partition Assignment   | Which consumer reads which partitions            |
+| Offset                 | Position in partition (per-message ID)           |
+| Committed Offset       | Last confirmed processed position                |
+| Lag                    | Messages behind (LEO - committed offset)         |
+| Rebalance              | Redistributing partitions among consumers        |
+| Poll Loop              | Main consumer loop calling poll()                |
++------------------------+--------------------------------------------------+
+
+KEY CONFIGS:
+    group.id                 - Consumer group name
+    auto.offset.reset        - earliest/latest/none
+    enable.auto.commit       - true/false
+    max.poll.records         - Records per poll
+    max.poll.interval.ms     - Max time between polls
+    session.timeout.ms       - Consumer health timeout
+    partition.assignment.strategy - Range/RoundRobin/Sticky/CooperativeSticky
+
+BEST PRACTICES:
+    1. Use CooperativeStickyAssignor for minimal rebalance impact
+    2. Set group.instance.id for static membership (rolling deploys)
+    3. Always close consumer in finally block
+    4. Handle WakeupException for graceful shutdown
+    5. Monitor consumer lag continuously
+    6. Use dead letter topics for failed messages
+    7. Tune max.poll.records based on processing time
+
+================================================================================
