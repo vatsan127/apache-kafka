@@ -1,0 +1,693 @@
+================================================================================
+                    KAFKA REBALANCING - HANDS-ON LAB
+================================================================================
+
+================================================================================
+1. SETUP - CREATE TEST TOPIC
+================================================================================
+
+Create a topic with 6 partitions for rebalancing experiments:
+
+    kafka-topics.sh --create --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --partitions 6 --replication-factor 1
+
+Verify:
+    kafka-topics.sh --describe --topic rebalance-demo \
+        --bootstrap-server localhost:9092
+
+================================================================================
+2. EXPERIMENT 1: WATCH CONSUMER JOIN/LEAVE REBALANCES
+================================================================================
+
+PURPOSE: Observe how partitions are redistributed when consumers join/leave
+
+TERMINAL 1 - Start first consumer:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group rebalance-group \
+        --property print.partition=true
+
+TERMINAL 2 - Check assignment (C1 has all 6 partitions):
+
+    kafka-consumer-groups.sh --describe --group rebalance-group \
+        --bootstrap-server localhost:9092
+
+    Expected Output:
+    ┌──────────┬───────────┬──────────┬────────────────┐
+    │ TOPIC    │ PARTITION │ CONSUMER │ HOST           │
+    ├──────────┼───────────┼──────────┼────────────────┤
+    │ demo     │ 0         │ C1       │ /127.0.0.1     │
+    │ demo     │ 1         │ C1       │ /127.0.0.1     │
+    │ demo     │ 2         │ C1       │ /127.0.0.1     │
+    │ demo     │ 3         │ C1       │ /127.0.0.1     │
+    │ demo     │ 4         │ C1       │ /127.0.0.1     │
+    │ demo     │ 5         │ C1       │ /127.0.0.1     │
+    └──────────┴───────────┴──────────┴────────────────┘
+
+TERMINAL 3 - Start second consumer (triggers rebalance!):
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group rebalance-group \
+        --property print.partition=true
+
+TERMINAL 2 - Check again (partitions now split 3-3):
+
+    kafka-consumer-groups.sh --describe --group rebalance-group \
+        --bootstrap-server localhost:9092
+
+    Expected Output:
+    ┌──────────┬───────────┬──────────┐
+    │ TOPIC    │ PARTITION │ CONSUMER │
+    ├──────────┼───────────┼──────────┤
+    │ demo     │ 0         │ C1       │
+    │ demo     │ 1         │ C1       │
+    │ demo     │ 2         │ C1       │
+    │ demo     │ 3         │ C2       │
+    │ demo     │ 4         │ C2       │
+    │ demo     │ 5         │ C2       │
+    └──────────┴───────────┴──────────┘
+
+TERMINAL 3 - Stop consumer (Ctrl+C)
+
+TERMINAL 2 - Check again (all partitions return to C1)
+
+================================================================================
+3. EXPERIMENT 2: WATCH REBALANCE STATES IN REAL-TIME
+================================================================================
+
+PURPOSE: See the state transitions during a rebalance
+
+TERMINAL 1 - Continuous state monitoring:
+
+    watch -n 1 'kafka-consumer-groups.sh --describe \
+        --group rebalance-group \
+        --bootstrap-server localhost:9092 --state'
+
+STATES YOU'LL SEE:
+
+    ┌─────────────────────┬─────────────────────────────────────────────┐
+    │ State               │ Description                                 │
+    ├─────────────────────┼─────────────────────────────────────────────┤
+    │ Stable              │ Normal operation, no rebalance in progress  │
+    │ PreparingRebalance  │ Coordinator waiting for members to join     │
+    │ CompletingRebalance │ Leader calculating assignment               │
+    │ Empty               │ No active consumers in group                │
+    │ Dead                │ Group has no members, being cleaned up      │
+    └─────────────────────┴─────────────────────────────────────────────┘
+
+    Transition: Stable → PreparingRebalance → CompletingRebalance → Stable
+
+================================================================================
+4. EXPERIMENT 3: PRODUCE MESSAGES DURING REBALANCE
+================================================================================
+
+PURPOSE: Observe message consumption pause during rebalance
+
+TERMINAL 1 - Start producer:
+
+    kafka-console-producer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092
+
+    Type messages continuously: msg1, msg2, msg3...
+
+TERMINAL 2 - First consumer:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group rebalance-group \
+        --property print.partition=true
+
+TERMINAL 3 - Second consumer:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group rebalance-group \
+        --property print.partition=true
+
+OBSERVATION:
+    - Kill Terminal 3 (Ctrl+C)
+    - Brief pause in message consumption
+    - Terminal 2 picks up all partitions
+    - Messages resume flowing
+
+================================================================================
+5. EXPERIMENT 4: STATIC MEMBERSHIP (NO REBALANCE ON RESTART)
+================================================================================
+
+PURPOSE: Demonstrate how static membership prevents unnecessary rebalances
+
+TERMINAL 1 - Consumer with static ID:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group static-group \
+        --consumer-property group.instance.id=consumer-1 \
+        --consumer-property session.timeout.ms=60000
+
+TERMINAL 2 - Monitor continuously:
+
+    watch -n 1 'kafka-consumer-groups.sh --describe \
+        --group static-group --bootstrap-server localhost:9092'
+
+TEST:
+    1. Stop Terminal 1 (Ctrl+C)
+    2. Notice state might show "Empty" or partitions as "unassigned"
+    3. Restart Terminal 1 within 60 seconds
+    4. Same partitions reassigned immediately - NO REBALANCE!
+
+WHY IT WORKS:
+    - group.instance.id gives consumer a fixed identity
+    - Coordinator remembers the assignment
+    - If consumer rejoins within session.timeout.ms, it gets same partitions
+
+================================================================================
+6. EXPERIMENT 5: FORCE REBALANCE VIA SLOW PROCESSING
+================================================================================
+
+PURPOSE: See what happens when max.poll.interval.ms is exceeded
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group slow-group \
+        --consumer-property max.poll.interval.ms=10000
+
+If consumer doesn't call poll() within 10 seconds:
+    - Coordinator assumes consumer is dead/stuck
+    - Consumer kicked from group
+    - Rebalance triggered
+
+================================================================================
+7. PARTITION ASSIGNMENT STRATEGIES - DEEP DIVE
+================================================================================
+
+OVERVIEW:
+    Assignment strategy determines HOW partitions are distributed among
+    consumers during a rebalance. Configured via:
+
+        partition.assignment.strategy=<fully.qualified.class.name>
+
+--------------------------------------------------------------------------------
+7.1 RANGE ASSIGNOR (Default)
+--------------------------------------------------------------------------------
+
+CLASS: org.apache.kafka.clients.consumer.RangeAssignor
+
+ALGORITHM:
+    1. For EACH topic separately:
+       a. Sort partitions by number (P0, P1, P2...)
+       b. Sort consumers by member ID (C1, C2...)
+       c. Divide partitions into contiguous ranges
+       d. Assign ranges to consumers
+
+FORMULA:
+    partitions_per_consumer = num_partitions / num_consumers
+    extra_partitions = num_partitions % num_consumers
+    First 'extra_partitions' consumers get one extra partition
+
+EXAMPLE 1 - Single Topic (6 partitions, 2 consumers):
+
+    Topic A: P0, P1, P2, P3, P4, P5
+
+    Calculation:
+        partitions_per_consumer = 6 / 2 = 3
+        extra_partitions = 6 % 2 = 0
+
+    Assignment:
+        C1: [A-P0, A-P1, A-P2]  (range 0-2)
+        C2: [A-P3, A-P4, A-P5]  (range 3-5)
+
+    Result: Balanced!
+
+EXAMPLE 2 - Single Topic (7 partitions, 3 consumers):
+
+    Topic A: P0, P1, P2, P3, P4, P5, P6
+
+    Calculation:
+        partitions_per_consumer = 7 / 3 = 2
+        extra_partitions = 7 % 3 = 1
+
+    Assignment:
+        C1: [A-P0, A-P1, A-P2]  (2 + 1 extra = 3)
+        C2: [A-P3, A-P4]        (2)
+        C3: [A-P5, A-P6]        (2)
+
+    Result: Slightly unbalanced (C1 has 1 extra)
+
+EXAMPLE 3 - Multiple Topics (THE PROBLEM):
+
+    Topic A: P0, P1, P2 (3 partitions)
+    Topic B: P0, P1, P2 (3 partitions)
+    Consumers: C1, C2
+
+    Per-topic calculation (3 partitions / 2 consumers):
+        partitions_per_consumer = 1
+        extra_partitions = 1 (first consumer gets extra)
+
+    Assignment:
+        For Topic A:
+            C1: [A-P0, A-P1]  (1 + 1 extra)
+            C2: [A-P2]
+
+        For Topic B:
+            C1: [B-P0, B-P1]  (1 + 1 extra)
+            C2: [B-P2]
+
+    Final:
+        C1: [A-P0, A-P1, B-P0, B-P1]  = 4 partitions
+        C2: [A-P2, B-P2]              = 2 partitions
+
+    PROBLEM: C1 has DOUBLE the load of C2!
+
+WHY THIS HAPPENS:
+    - Range processes each topic independently
+    - The "extra" partition always goes to the first consumer
+    - With multiple topics, imbalance compounds
+
+WHEN TO USE:
+    - Single topic subscriptions
+    - When partition locality matters (all partitions of a topic together)
+
+CLI TEST:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group range-group \
+        --consumer-property partition.assignment.strategy=\
+org.apache.kafka.clients.consumer.RangeAssignor
+
+--------------------------------------------------------------------------------
+7.2 ROUND ROBIN ASSIGNOR
+--------------------------------------------------------------------------------
+
+CLASS: org.apache.kafka.clients.consumer.RoundRobinAssignor
+
+ALGORITHM:
+    1. Collect ALL partitions from ALL subscribed topics
+    2. Sort all partitions (by topic name, then partition number)
+    3. Sort all consumers by member ID
+    4. Assign partitions one-by-one in round-robin fashion
+
+EXAMPLE - Multiple Topics:
+
+    Topic A: P0, P1, P2
+    Topic B: P0, P1, P2
+    Consumers: C1, C2
+
+    All partitions sorted: A-P0, A-P1, A-P2, B-P0, B-P1, B-P2
+
+    Round-robin assignment:
+        A-P0 → C1
+        A-P1 → C2
+        A-P2 → C1
+        B-P0 → C2
+        B-P1 → C1
+        B-P2 → C2
+
+    Final:
+        C1: [A-P0, A-P2, B-P1]  = 3 partitions
+        C2: [A-P1, B-P0, B-P2]  = 3 partitions
+
+    Result: BALANCED!
+
+EXAMPLE - Uneven Partitions:
+
+    Topic A: P0, P1, P2, P3, P4 (5 partitions)
+    Consumers: C1, C2, C3
+
+    Round-robin:
+        A-P0 → C1
+        A-P1 → C2
+        A-P2 → C3
+        A-P3 → C1
+        A-P4 → C2
+
+    Final:
+        C1: [A-P0, A-P3]  = 2 partitions
+        C2: [A-P1, A-P4]  = 2 partitions
+        C3: [A-P2]        = 1 partition
+
+    Result: As balanced as possible!
+
+LIMITATION - Heterogeneous Subscriptions:
+
+    If consumers subscribe to DIFFERENT topics:
+
+        C1 subscribes to: Topic A, Topic B
+        C2 subscribes to: Topic A only
+
+        Topic A: P0, P1
+        Topic B: P0, P1
+
+    Round-robin might assign:
+        C1: [A-P0, B-P0]
+        C2: [A-P1]
+        B-P1: ??? (C2 can't take it, only C1 can)
+
+    Final:
+        C1: [A-P0, B-P0, B-P1]  = 3 partitions
+        C2: [A-P1]              = 1 partition
+
+    PROBLEM: Imbalanced due to heterogeneous subscriptions
+
+WHEN TO USE:
+    - All consumers subscribe to the same topics
+    - Multiple topics with balanced partition counts
+
+CLI TEST:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group roundrobin-group \
+        --consumer-property partition.assignment.strategy=\
+org.apache.kafka.clients.consumer.RoundRobinAssignor
+
+--------------------------------------------------------------------------------
+7.3 STICKY ASSIGNOR
+--------------------------------------------------------------------------------
+
+CLASS: org.apache.kafka.clients.consumer.StickyAssignor
+
+GOALS (in priority order):
+    1. Balance partitions as evenly as possible (like RoundRobin)
+    2. Minimize partition movement during rebalance
+
+ALGORITHM:
+    First Assignment:
+        - Similar to RoundRobin (balanced)
+
+    Subsequent Rebalances:
+        1. Start with current assignment
+        2. Only reassign partitions that MUST move
+        3. Keep existing assignments whenever possible
+
+EXAMPLE - Initial Assignment:
+
+    Topic: P0, P1, P2, P3, P4, P5
+    Consumers: C1, C2
+
+    Assignment (balanced):
+        C1: [P0, P1, P2]
+        C2: [P3, P4, P5]
+
+EXAMPLE - Consumer Joins (C3):
+
+    With RoundRobin (complete reshuffle):
+        C1: [P0, P3]
+        C2: [P1, P4]
+        C3: [P2, P5]
+
+        Movements: 4 partitions moved!
+
+    With Sticky (minimal movement):
+        C1: [P0, P1]      (kept P0, P1)
+        C2: [P3, P4]      (kept P3, P4)
+        C3: [P2, P5]      (got P2 from C1, P5 from C2)
+
+        Movements: 2 partitions moved!
+
+EXAMPLE - Consumer Leaves (C2 dies):
+
+    Before:
+        C1: [P0, P1]
+        C2: [P3, P4]
+        C3: [P2, P5]
+
+    With Sticky:
+        C1: [P0, P1, P3]  (kept P0, P1, inherited P3)
+        C3: [P2, P5, P4]  (kept P2, P5, inherited P4)
+
+        Only orphaned partitions (P3, P4) are reassigned!
+
+WHY STICKINESS MATTERS:
+
+    Stateful Consumers (Kafka Streams, Custom State):
+        - Local state tied to partitions
+        - Partition movement = state rebuild from changelog
+        - Less movement = faster recovery
+
+    Cache Locality:
+        - Consumer may cache data per partition
+        - Keeping partitions = cache stays warm
+
+LIMITATION:
+    - Still uses EAGER protocol (stop-the-world)
+    - All consumers pause during rebalance
+    - Just minimizes reassignment, not the pause
+
+CLI TEST:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group sticky-group \
+        --consumer-property partition.assignment.strategy=\
+org.apache.kafka.clients.consumer.StickyAssignor
+
+--------------------------------------------------------------------------------
+7.4 COOPERATIVE STICKY ASSIGNOR (RECOMMENDED)
+--------------------------------------------------------------------------------
+
+CLASS: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+COMBINES:
+    - Sticky assignment (minimal movement)
+    - Cooperative protocol (incremental rebalance)
+
+ALGORITHM:
+    Same stickiness logic as StickyAssignor, but:
+    - Uses COOPERATIVE rebalance protocol
+    - Only revokes partitions that need to move
+    - Other partitions keep processing!
+
+EXAMPLE - Consumer Joins (C3):
+
+    Before:
+        C1: [P0, P1, P2] (processing)
+        C2: [P3, P4, P5] (processing)
+
+    EAGER Sticky would:
+        1. STOP all consumers
+        2. Revoke all partitions
+        3. Reassign
+        4. Resume all consumers
+
+    COOPERATIVE Sticky does:
+        1. First rebalance:
+           - Identify P2 and P5 need to move
+           - C1 revokes P2 (keeps processing P0, P1!)
+           - C2 revokes P5 (keeps processing P3, P4!)
+
+        2. Second rebalance:
+           - C3 receives P2 and P5
+           - All consumers now have 2 partitions each
+
+    Result: C1 and C2 NEVER stopped processing their stable partitions!
+
+TWO-PHASE REBALANCE:
+
+    Phase 1 (Identify & Revoke):
+        - Leader calculates new assignment
+        - Identifies partitions to move
+        - Affected consumers revoke only those partitions
+        - Unaffected consumers keep processing
+
+    Phase 2 (Assign):
+        - Revoked partitions assigned to new owners
+        - Minimal disruption achieved
+
+CONFIGURATION:
+
+    partition.assignment.strategy=\
+        org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+CLI TEST:
+
+    kafka-console-consumer.sh --topic rebalance-demo \
+        --bootstrap-server localhost:9092 \
+        --group coop-group \
+        --consumer-property partition.assignment.strategy=\
+org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+--------------------------------------------------------------------------------
+7.5 STRATEGY COMPARISON
+--------------------------------------------------------------------------------
+
++----------------------+----------+----------+-------------+------------------+
+| Strategy             | Balance  | Movement | Protocol    | Best For         |
++----------------------+----------+----------+-------------+------------------+
+| RangeAssignor        | Poor*    | High     | Eager       | Single topic     |
+| RoundRobinAssignor   | Good     | High     | Eager       | Homogeneous subs |
+| StickyAssignor       | Good     | Low      | Eager       | Stateful (legacy)|
+| CooperativeStickyA.  | Good     | Low      | Cooperative | Production!      |
++----------------------+----------+----------+-------------+------------------+
+
+* Range is balanced for single topic, poor for multiple topics
+
+--------------------------------------------------------------------------------
+7.6 VISUAL COMPARISON - REBALANCE SCENARIOS
+--------------------------------------------------------------------------------
+
+SCENARIO: 6 partitions, 2 consumers → 3rd consumer joins
+
+    INITIAL STATE:
+        C1: [P0, P1, P2]
+        C2: [P3, P4, P5]
+
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │ RANGE ASSIGNOR                                                         │
+    ├────────────────────────────────────────────────────────────────────────┤
+    │ 1. ALL consumers STOP                                                  │
+    │ 2. ALL partitions revoked                                              │
+    │ 3. Recalculate ranges per topic                                        │
+    │ 4. Result:                                                             │
+    │    C1: [P0, P1]                                                        │
+    │    C2: [P2, P3]                                                        │
+    │    C3: [P4, P5]                                                        │
+    │ 5. ALL consumers RESUME                                                │
+    │                                                                        │
+    │ Movement: 4 partitions (P2 C1→C2, P3 C2→C2, P4 C2→C3, P5 C2→C3)       │
+    │ Downtime: FULL (all consumers paused)                                  │
+    └────────────────────────────────────────────────────────────────────────┘
+
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │ ROUND ROBIN ASSIGNOR                                                   │
+    ├────────────────────────────────────────────────────────────────────────┤
+    │ 1. ALL consumers STOP                                                  │
+    │ 2. ALL partitions revoked                                              │
+    │ 3. Assign round-robin: P0→C1, P1→C2, P2→C3, P3→C1, P4→C2, P5→C3      │
+    │ 4. Result:                                                             │
+    │    C1: [P0, P3]                                                        │
+    │    C2: [P1, P4]                                                        │
+    │    C3: [P2, P5]                                                        │
+    │ 5. ALL consumers RESUME                                                │
+    │                                                                        │
+    │ Movement: 4 partitions (P1, P2 from C1; P3, P4 from C2)               │
+    │ Downtime: FULL (all consumers paused)                                  │
+    └────────────────────────────────────────────────────────────────────────┘
+
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │ STICKY ASSIGNOR                                                        │
+    ├────────────────────────────────────────────────────────────────────────┤
+    │ 1. ALL consumers STOP                                                  │
+    │ 2. ALL partitions revoked                                              │
+    │ 3. Keep existing where possible, move minimum                          │
+    │ 4. Result:                                                             │
+    │    C1: [P0, P1]      (kept P0, P1 from original)                       │
+    │    C2: [P3, P4]      (kept P3, P4 from original)                       │
+    │    C3: [P2, P5]      (got P2 from C1, P5 from C2)                      │
+    │ 5. ALL consumers RESUME                                                │
+    │                                                                        │
+    │ Movement: 2 partitions (only P2 and P5)                                │
+    │ Downtime: FULL (all consumers still paused)                            │
+    └────────────────────────────────────────────────────────────────────────┘
+
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │ COOPERATIVE STICKY ASSIGNOR                                            │
+    ├────────────────────────────────────────────────────────────────────────┤
+    │ Phase 1:                                                               │
+    │    C1: [P0, P1] processing, revokes P2                                 │
+    │    C2: [P3, P4] processing, revokes P5                                 │
+    │    C3: [] waiting                                                      │
+    │                                                                        │
+    │ Phase 2:                                                               │
+    │    C1: [P0, P1] (still processing, unchanged!)                         │
+    │    C2: [P3, P4] (still processing, unchanged!)                         │
+    │    C3: [P2, P5] (assigned revoked partitions)                          │
+    │                                                                        │
+    │ Movement: 2 partitions (only P2 and P5)                                │
+    │ Downtime: MINIMAL (C1, C2 never stopped for P0,P1,P3,P4)              │
+    └────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+8. MONITORING SCRIPT
+================================================================================
+
+Save as: rebalance-monitor.sh
+
+    #!/bin/bash
+    GROUP=${1:-"rebalance-group"}
+    BOOTSTRAP=${2:-"localhost:9092"}
+
+    echo "========================================="
+    echo "Consumer Group: $GROUP"
+    echo "========================================="
+
+    echo ""
+    echo "=== GROUP STATE ==="
+    kafka-consumer-groups.sh --describe --group $GROUP \
+        --bootstrap-server $BOOTSTRAP --state
+
+    echo ""
+    echo "=== PARTITION ASSIGNMENTS ==="
+    kafka-consumer-groups.sh --describe --group $GROUP \
+        --bootstrap-server $BOOTSTRAP
+
+    echo ""
+    echo "=== MEMBER DETAILS ==="
+    kafka-consumer-groups.sh --describe --group $GROUP \
+        --bootstrap-server $BOOTSTRAP --members --verbose
+
+Usage:
+    chmod +x rebalance-monitor.sh
+    ./rebalance-monitor.sh rebalance-group localhost:9092
+
+================================================================================
+9. CLEANUP
+================================================================================
+
+Delete test topics and groups:
+
+    # Delete topic
+    kafka-topics.sh --delete --topic rebalance-demo \
+        --bootstrap-server localhost:9092
+
+    # Delete consumer groups (stop consumers first)
+    kafka-consumer-groups.sh --delete --group rebalance-group \
+        --bootstrap-server localhost:9092
+
+    kafka-consumer-groups.sh --delete --group range-group \
+        --bootstrap-server localhost:9092
+
+    kafka-consumer-groups.sh --delete --group roundrobin-group \
+        --bootstrap-server localhost:9092
+
+    kafka-consumer-groups.sh --delete --group sticky-group \
+        --bootstrap-server localhost:9092
+
+    kafka-consumer-groups.sh --delete --group coop-group \
+        --bootstrap-server localhost:9092
+
+    kafka-consumer-groups.sh --delete --group static-group \
+        --bootstrap-server localhost:9092
+
+================================================================================
+10. QUICK REFERENCE
+================================================================================
+
+ASSIGNMENT STRATEGY CLASSES:
+
+    org.apache.kafka.clients.consumer.RangeAssignor
+    org.apache.kafka.clients.consumer.RoundRobinAssignor
+    org.apache.kafka.clients.consumer.StickyAssignor
+    org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+
+KEY CONFIGURATIONS:
+
+    partition.assignment.strategy     # Which assignor to use
+    group.instance.id                 # Static membership ID
+    session.timeout.ms                # Time before coordinator marks dead
+    heartbeat.interval.ms             # Heartbeat frequency
+    max.poll.interval.ms              # Max time between poll() calls
+
+RECOMMENDED PRODUCTION CONFIG:
+
+    partition.assignment.strategy=\
+        org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+    group.instance.id=<unique-per-consumer>
+    session.timeout.ms=45000
+    heartbeat.interval.ms=3000
+    max.poll.interval.ms=300000
+
+================================================================================
