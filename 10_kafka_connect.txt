@@ -71,14 +71,12 @@ CONNECTORS:
         - Examples: JDBC, Elasticsearch, S3, HDFS
 
 TASKS:
-
     - Unit of parallelism
     - Connector divides work into tasks
     - Each task handles subset of data
     - Example: JDBC connector creates task per table
 
 WORKERS:
-
     - JVM processes that run connectors/tasks
     - Two modes: Standalone, Distributed
 
@@ -92,23 +90,6 @@ WORKERS:
         - Tasks distributed across workers
         - Automatic failover
         - Production recommended
-
-CONVERTERS:
-
-    - Serialize/deserialize data
-    - Transform between Connect format and Kafka format
-    - Common converters:
-        - JsonConverter
-        - AvroConverter (with Schema Registry)
-        - StringConverter
-        - ByteArrayConverter
-
-TRANSFORMS (SMT - Single Message Transforms):
-
-    - Modify messages in-flight
-    - Applied per message
-    - Chain multiple transforms
-    - Examples: Filter, Rename, Mask, Timestamp
 
 ================================================================================
 3. DEPLOYMENT MODES
@@ -161,123 +142,74 @@ DISTRIBUTED MODE:
         key.converter=org.apache.kafka.connect.json.JsonConverter
         value.converter=org.apache.kafka.connect.json.JsonConverter
 
-        # Internal topics for distributed mode
-        config.storage.topic=connect-configs
-        offset.storage.topic=connect-offsets
-        status.storage.topic=connect-status
-
-        config.storage.replication.factor=3
-        offset.storage.replication.factor=3
-        status.storage.replication.factor=3
-
-INTERNAL TOPICS (Distributed Mode):
-
-    connect-configs:
-        - Stores connector configurations
-        - Compacted topic
-
-    connect-offsets:
-        - Stores source connector offsets
-        - Tracks position in source system
-
-    connect-status:
-        - Stores connector/task status
-        - Health information
-
 ================================================================================
-4. COMMON CONNECTORS
+4. JDBC CONNECTORS
 ================================================================================
 
-SOURCE CONNECTORS:
+JDBC SOURCE CONNECTOR:
 
-    JDBC Source Connector:
+    Purpose:
         - Reads from relational databases
         - Supports bulk and incremental modes
         - Tables become topics
 
-        Configuration:
+    Modes:
+        - bulk: Load entire table each time
+        - incrementing: Track new rows by incrementing column (id)
+        - timestamp: Track new/updated rows by timestamp column
+        - timestamp+incrementing: Combination of both
+
+    Configuration:
             connector.class=io.confluent.connect.jdbc.JdbcSourceConnector
-            connection.url=jdbc:mysql://localhost:3306/mydb
+            connection.url=jdbc:postgresql://localhost:5432/mydb
             connection.user=user
             connection.password=password
             mode=incrementing
             incrementing.column.name=id
-            topic.prefix=mysql-
+            topic.prefix=postgres-
+            table.whitelist=users,orders
+            poll.interval.ms=5000
 
-    Debezium (CDC):
-        - Change Data Capture
-        - Captures INSERT, UPDATE, DELETE
-        - Supports MySQL, PostgreSQL, MongoDB, etc.
+    Key Parameters:
+        - mode: bulk | incrementing | timestamp | timestamp+incrementing
+        - incrementing.column.name: Column to track new rows
+        - timestamp.column.name: Column to track updates
+        - topic.prefix: Prefix for created topics
+        - table.whitelist: Tables to include
+        - poll.interval.ms: How often to poll database
 
-        Configuration (MySQL):
-            connector.class=io.debezium.connector.mysql.MySqlConnector
-            database.hostname=localhost
-            database.port=3306
-            database.user=debezium
-            database.password=password
-            database.server.id=1
-            database.server.name=mysql-server
-            database.include.list=mydb
-            table.include.list=mydb.users,mydb.orders
+JDBC SINK CONNECTOR:
 
-    FileStream Source:
-        - Reads from files
-        - Good for testing
-        - Not for production
-
-        Configuration:
-            connector.class=FileStreamSource
-            file=/path/to/input.txt
-            topic=file-topic
-
-SINK CONNECTORS:
-
-    JDBC Sink Connector:
+    Purpose:
         - Writes to relational databases
         - Auto-creates tables (optional)
-        - Supports upsert mode
+        - Supports insert and upsert modes
 
-        Configuration:
+    Insert Modes:
+        - insert: Simple INSERT statements
+        - upsert: INSERT with ON CONFLICT UPDATE (or equivalent)
+        - update: Only UPDATE existing rows
+
+    Configuration:
             connector.class=io.confluent.connect.jdbc.JdbcSinkConnector
             connection.url=jdbc:postgresql://localhost:5432/mydb
             connection.user=user
             connection.password=password
             topics=orders
             auto.create=true
+            auto.evolve=true
             insert.mode=upsert
             pk.mode=record_key
             pk.fields=id
+            batch.size=3000
 
-    Elasticsearch Sink:
-        - Writes to Elasticsearch
-        - Auto-creates indexes
-        - Supports document routing
-
-        Configuration:
-            connector.class=io.confluent.connect.elasticsearch.ElasticsearchSinkConnector
-            connection.url=http://localhost:9200
-            topics=logs
-            type.name=_doc
-            key.ignore=true
-
-    S3 Sink Connector:
-        - Writes to Amazon S3
-        - Supports partitioning
-        - Multiple formats (JSON, Avro, Parquet)
-
-        Configuration:
-            connector.class=io.confluent.connect.s3.S3SinkConnector
-            s3.bucket.name=my-bucket
-            s3.region=us-east-1
-            topics=events
-            flush.size=1000
-            storage.class=io.confluent.connect.s3.storage.S3Storage
-            format.class=io.confluent.connect.s3.format.json.JsonFormat
-
-    HDFS Sink Connector:
-        - Writes to Hadoop HDFS
-        - Supports partitioning
-        - Integrates with Hive
+    Key Parameters:
+        - auto.create: Auto-create tables if not exists
+        - auto.evolve: Auto-add columns for new fields
+        - insert.mode: insert | upsert | update
+        - pk.mode: record_key | record_value | kafka
+        - pk.fields: Primary key field names
+        - batch.size: Number of records per batch
 
 ================================================================================
 5. REST API
@@ -286,13 +218,11 @@ SINK CONNECTORS:
 Kafka Connect exposes REST API for management (default port: 8083)
 
 CLUSTER INFORMATION:
-
     GET /                           - Connect version info
     GET /connectors                 - List all connectors
     GET /connector-plugins          - List available connector plugins
 
 CONNECTOR MANAGEMENT:
-
     Create Connector:
         POST /connectors
         Content-Type: application/json
@@ -306,12 +236,8 @@ CONNECTOR MANAGEMENT:
             }
         }
 
-    Get Connector:
-        GET /connectors/{name}
-
-    Get Connector Config:
-        GET /connectors/{name}/config
-
+    Get Connector: GET /connectors/{name}
+    Get Connector Config: GET /connectors/{name}/config
     Update Connector:
         PUT /connectors/{name}/config
         Content-Type: application/json
@@ -322,121 +248,21 @@ CONNECTOR MANAGEMENT:
             "topic": "my-topic"
         }
 
-    Delete Connector:
-        DELETE /connectors/{name}
-
-CONNECTOR STATUS:
-
-    Get Status:
-        GET /connectors/{name}/status
-
-        Response:
-        {
-            "name": "my-connector",
-            "connector": {
-                "state": "RUNNING",
-                "worker_id": "worker1:8083"
-            },
-            "tasks": [
-                {
-                    "id": 0,
-                    "state": "RUNNING",
-                    "worker_id": "worker1:8083"
-                }
-            ]
-        }
+    Delete Connector: DELETE /connectors/{name}
+    Get Connector Status: GET /connectors/{name}/status
 
 TASK MANAGEMENT:
-
-    List Tasks:
-        GET /connectors/{name}/tasks
-
-    Get Task Status:
-        GET /connectors/{name}/tasks/{taskId}/status
-
-    Restart Task:
-        POST /connectors/{name}/tasks/{taskId}/restart
+    List Tasks: GET /connectors/{name}/tasks
+    Get Task Status: GET /connectors/{name}/tasks/{taskId}/status
+    Restart Task: POST /connectors/{name}/tasks/{taskId}/restart
 
 CONNECTOR CONTROL:
-
-    Pause Connector:
-        PUT /connectors/{name}/pause
-
-    Resume Connector:
-        PUT /connectors/{name}/resume
-
-    Restart Connector:
-        POST /connectors/{name}/restart
+    Pause Connector: PUT /connectors/{name}/pause
+    Resume Connector: PUT /connectors/{name}/resume
+    Restart Connector: POST /connectors/{name}/restart
 
 ================================================================================
-6. TRANSFORMS (SMT)
-================================================================================
-
-Single Message Transforms modify records individually.
-
-BUILT-IN TRANSFORMS:
-
-    InsertField:
-        - Add field to record
-        transforms=addTimestamp
-        transforms.addTimestamp.type=org.apache.kafka.connect.transforms.InsertField$Value
-        transforms.addTimestamp.timestamp.field=processed_at
-
-    ReplaceField:
-        - Include/exclude/rename fields
-        transforms=removeFields
-        transforms.removeFields.type=org.apache.kafka.connect.transforms.ReplaceField$Value
-        transforms.removeFields.exclude=password,ssn
-
-    MaskField:
-        - Mask sensitive data
-        transforms=maskPII
-        transforms.maskPII.type=org.apache.kafka.connect.transforms.MaskField$Value
-        transforms.maskPII.fields=credit_card
-        transforms.maskPII.replacement=****
-
-    Filter:
-        - Drop records based on condition
-        transforms=filterNull
-        transforms.filterNull.type=org.apache.kafka.connect.transforms.Filter
-        transforms.filterNull.condition=value.amount == null
-
-    TimestampConverter:
-        - Convert timestamp formats
-        transforms=convertTime
-        transforms.convertTime.type=org.apache.kafka.connect.transforms.TimestampConverter$Value
-        transforms.convertTime.field=created_at
-        transforms.convertTime.target.type=Timestamp
-
-    ValueToKey:
-        - Extract key from value
-        transforms=extractKey
-        transforms.extractKey.type=org.apache.kafka.connect.transforms.ValueToKey
-        transforms.extractKey.fields=id
-
-    ExtractField:
-        - Extract single field
-        transforms=unwrap
-        transforms.unwrap.type=org.apache.kafka.connect.transforms.ExtractField$Value
-        transforms.unwrap.field=payload
-
-    Flatten:
-        - Flatten nested structures
-        transforms=flatten
-        transforms.flatten.type=org.apache.kafka.connect.transforms.Flatten$Value
-        transforms.flatten.delimiter=_
-
-CHAINING TRANSFORMS:
-
-    transforms=rename,mask,addField
-    transforms.rename.type=...
-    transforms.mask.type=...
-    transforms.addField.type=...
-
-    Applied in order: rename → mask → addField
-
-================================================================================
-7. ERROR HANDLING
+6. ERROR HANDLING
 ================================================================================
 
 ERROR TYPES:
@@ -502,7 +328,7 @@ DEAD LETTER QUEUE:
         - Connector/task information
 
 ================================================================================
-8. MONITORING
+7. MONITORING
 ================================================================================
 
 JMX METRICS:
@@ -590,14 +416,9 @@ REST API (Base URL: http://localhost:8083):
     # List connector plugins
     curl http://localhost:8083/connector-plugins
 
-COMMON CONNECTORS:
-    Source: JDBC, Debezium, FileStream, S3, Kinesis
-    Sink: JDBC, Elasticsearch, S3, HDFS, MongoDB
-
-INTERNAL TOPICS (Distributed):
-    connect-configs  - Connector configurations
-    connect-offsets  - Source offsets
-    connect-status   - Connector/task status
+JDBC CONNECTORS:
+    Source: Reads from PostgreSQL databases
+    Sink: Writes to PostgreSQL databases
 
 ERROR HANDLING:
     errors.tolerance=all
