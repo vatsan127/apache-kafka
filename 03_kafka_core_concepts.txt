@@ -719,3 +719,68 @@ QUICK REFERENCE
 +-------------+----------------------------------------------------------+
 
 ================================================================================
+Q&A - COMMON DOUBTS
+================================================================================
+
+Q: If there are 3 brokers and a topic with 3 partitions, how are partitions
+   distributed?
+
+A: Kafka distributes partitions evenly across available brokers:
+
+    Broker 0 → Partition 0
+    Broker 1 → Partition 1
+    Broker 2 → Partition 2
+
+   This is how Kafka achieves parallelism and load balancing. The partition-to-
+   broker assignment is managed by the controller (KRaft controller in KRaft mode).
+
+--------------------------------------------------------------------------------
+
+Q: What happens when one of the 3 brokers goes down?
+
+A: It depends on whether replication is configured.
+
+   WITHOUT REPLICATION (replication-factor = 1):
+
+    Broker 0 → Partition 0  ✅ Available
+    Broker 1 → Partition 1  ❌ UNAVAILABLE (data lost if disk fails)
+    Broker 2 → Partition 2  ✅ Available
+
+    - Partition 1 is completely unavailable — no reads, no writes
+    - Consumers assigned to P1 will get errors
+    - Producers writing to P1 will fail
+
+   WITH REPLICATION (replication-factor = 3) — Production setup:
+
+    Before failure:
+               Broker 0         Broker 1         Broker 2
+    P0         Leader           Follower         Follower
+    P1         Follower         Leader           Follower
+    P2         Follower         Follower         Leader
+
+    When Broker 1 goes down:
+    1. KRaft controller detects Broker 1 is unresponsive (heartbeat timeout)
+    2. P1 lost its leader — controller picks new leader from ISR
+       P1: Broker 0 (follower) → promoted to Leader
+    3. All 3 partitions remain available, zero data loss
+
+    After failover:
+               Broker 0                   Broker 2
+    P0         Leader                     Follower
+    P1         Leader (newly elected)     Follower
+    P2         Follower                   Leader
+
+    When Broker 1 comes back:
+    - Rejoins the cluster
+    - Stale replicas catch up from current leaders
+    - Controller may trigger preferred leader election to rebalance
+
+   Key configs that control this behavior:
+    replication.factor                = 3    (copies of each partition)
+    min.insync.replicas               = 2    (min replicas to ack a write)
+    unclean.leader.election.enable    = false (prevent out-of-sync leader)
+    acks                              = all  (wait for all ISR to ack)
+
+   Golden rule for production: RF=3, min.insync.replicas=2, acks=all
+
+================================================================================

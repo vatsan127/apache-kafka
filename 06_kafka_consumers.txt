@@ -535,3 +535,37 @@ BEST PRACTICES:
     7. Tune max.poll.records based on processing time
 
 ================================================================================
+Q&A - COMMON DOUBTS
+================================================================================
+
+Q: If a topic has 3 partitions across 3 brokers, does the consumer poll all
+   3 brokers to get messages?
+
+A: The consumer does NOT poll all brokers blindly. Here's how it works:
+
+   1. Consumer contacts the bootstrap server to get METADATA
+      - Metadata tells it which broker is the LEADER for each partition
+
+   2. Consumer opens connections to the SPECIFIC leader brokers for its
+      assigned partitions
+
+   3. Each poll() call fetches messages from those leader brokers in parallel
+
+   Single consumer (assigned all 3 partitions):
+
+    poll() internally →
+       fetch from Broker 0 (leader of P0)
+       fetch from Broker 1 (leader of P1)
+       fetch from Broker 2 (leader of P2)
+
+   Consumer group with 3 consumers:
+
+    Consumer A (assigned P0) → fetches only from Broker 0
+    Consumer B (assigned P1) → fetches only from Broker 1
+    Consumer C (assigned P2) → fetches only from Broker 2
+
+   Key point: The consumer knows exactly which broker holds which partition
+   (via metadata) and makes direct, targeted fetch requests. This is what
+   makes Kafka efficient.
+
+================================================================================

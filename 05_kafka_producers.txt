@@ -695,3 +695,187 @@ QUICK REFERENCE: PRODUCER CONFIGURATION
 +--------------------------------+------------------+---------------------------+
 
 ================================================================================
+Q&A - COMMON DOUBTS
+================================================================================
+
+Q: How does Kafka transfer data from producer to topic?
+
+A: The data flows through these steps:
+
+   1. SERIALIZATION
+      Producer serializes key and value into bytes using configured serializer
+      (e.g., StringSerializer, JsonSerializer)
+
+   2. PARTITIONING
+      Producer determines which partition to send the message to:
+        Key present?  → hash(key) % number_of_partitions → deterministic partition
+        No key?       → Sticky partitioner (batches to one partition, then rotates)
+
+   3. BATCHING (Record Accumulator)
+      Message is NOT sent immediately. It goes into an internal memory buffer:
+
+        Record Accumulator (in producer memory)
+        ├── Batch for Topic-A, Partition 0  → [msg1, msg2, msg3]
+        ├── Batch for Topic-A, Partition 1  → [msg4, msg5]
+        └── Batch for Topic-A, Partition 2  → [msg6]
+
+      A batch is sent when either:
+        - batch.size (default 16KB) is full
+        - linger.ms (default 0ms) time has elapsed
+
+   4. SENDER THREAD → NETWORK
+      A separate Sender thread picks up full batches and sends them to the
+      leader broker of that partition over TCP.
+
+        Producer (JVM)
+          └── Sender Thread
+                └── TCP → Broker 1 (leader of P0)
+                └── TCP → Broker 2 (leader of P1)
+                └── TCP → Broker 0 (leader of P2)
+
+      Producer knows which broker is the leader via metadata requests.
+
+   5. BROKER WRITES TO PARTITION LOG
+      Leader broker appends messages to the partition's commit log (disk file).
+      Each message gets a sequential offset.
+      Writing is sequential I/O (append-only) — this is why Kafka is fast.
+
+        Partition 0 log: [offset 0][offset 1][offset 2][offset 3][offset 4]
+                                                                  ↑ newly appended
+
+   6. REPLICATION
+      If replication-factor > 1, follower brokers PULL data from the leader:
+        Leader (Broker 1)  ──pull──→  Follower (Broker 0)
+                           ──pull──→  Follower (Broker 2)
+      Note: Followers fetch from leader. Leader does NOT push to followers.
+
+   7. ACKNOWLEDGEMENT
+      Leader sends ack back to producer based on acks setting:
+        acks=0    → Immediately (fire and forget) — fastest, risk of data loss
+        acks=1    → After leader writes to disk — balanced
+        acks=all  → After all ISR replicas confirm — safest, slower
+
+   End-to-end summary:
+     Serialize → Partition → Batch → Send → Broker writes → Replicate → Ack
+
+--------------------------------------------------------------------------------
+
+Q: What does "serialization to bytes" mean? What are bytes?
+
+A: Bytes are the fundamental unit of data that computers and networks understand.
+   Computers don't understand strings like "Hello" or objects like {"name":"John"}
+   directly — they only understand binary data (0s and 1s), organized as bytes.
+
+     1 byte = 8 bits = e.g., 01001000
+
+   Networks can only transmit raw bytes, not Java objects or strings. So the
+   producer must convert (serialize) data into bytes before sending:
+
+     "Hello"  →  StringSerializer  →  [72, 101, 108, 108, 111]
+
+   Each character maps to a number using encoding like UTF-8:
+     H=72, e=101, l=108, l=108, o=111
+
+   The full cycle:
+     Producer side:  "Hello" → Serializer → bytes   → network
+     Consumer side:  network → bytes → Deserializer  → "Hello"
+
+   This is why in Kafka config you set:
+     Producer: key.serializer, value.serializer        (encode)
+     Consumer: key.deserializer, value.deserializer    (decode)
+
+--------------------------------------------------------------------------------
+
+Q: HTTP API sends plain text — isn't that the same? How is gRPC faster?
+
+A: HTTP also converts text to bytes before sending — the network ALWAYS transmits
+   bytes. HTTP just hides this from you (the framework handles it automatically).
+
+   The speed difference between REST and gRPC comes from multiple factors:
+
+   1. SERIALIZATION FORMAT:
+
+      REST (JSON — text based):
+        {"name":"John","age":30}  = ~30 bytes, parsed character by character
+
+      gRPC (Protobuf — binary):
+        [0A 04 4A 6F 68 6E 10 1E] = ~10 bytes, directly decoded
+
+      Both produce bytes, but Protobuf bytes are ~3-4x smaller and faster to parse.
+
+   2. HTTP PROTOCOL:
+
+      REST  → HTTP/1.1 (typically): one request at a time per connection
+      gRPC  → HTTP/2 (always): multiplexing — many requests on one connection
+
+      HTTP/1.1: Request 1 → Response 1, then Request 2 → Response 2 (sequential)
+      HTTP/2:   Request 1,2,3 all sent on ONE connection, responses come as ready
+
+   3. HEADER OVERHEAD:
+
+      REST: Full text headers (~300-800 bytes) sent EVERY call
+      gRPC: Headers compressed with HPACK, repeated headers sent as tiny index
+            references after first call (~5-10 bytes)
+
+   4. STREAMING:
+
+      REST:  Client → Request → Response (only this pattern)
+      gRPC:  Unary, server streaming, client streaming, bidirectional
+
+   It's the COMBINATION of all these that makes gRPC faster, not just one thing.
+
+   Key insight: "Text format" and "binary format" both produce bytes — the
+   difference is text bytes are human-readable but larger, binary bytes are
+   machine-optimized and compact.
+
+--------------------------------------------------------------------------------
+
+Q: If both serialize to bytes, what is the use of different Kafka serializers
+   like StringSerializer, JsonSerializer, AvroSerializer?
+
+A: All serializers do the same job: Object → Bytes. The difference is HOW they
+   structure those bytes — which affects size, speed, and schema enforcement.
+
+   Same data (name="John", age=30) with different serializers:
+
+     StringSerializer:   [123, 34, 110, 97, ...]    ~30 bytes (you convert to
+                         string first, Kafka just converts string to bytes)
+
+     JsonSerializer:     [123, 34, 110, 97, ...]    ~30 bytes (Kafka converts
+                         your object to JSON to bytes automatically)
+
+     AvroSerializer:     [08, 4A, 6F, 68, 6E, 3C]   ~8 bytes (compact binary,
+                         schema stored in Schema Registry)
+
+     ProtobufSerializer: [0A, 04, 4A, 6F, 68, 6E...]  ~10 bytes (compact binary,
+                         schema in .proto files)
+
+   Comparison:
+     +---------------------+--------+--------+--------+---------------------+
+     | Serializer          | Size   | Speed  | Schema | Best For            |
+     +---------------------+--------+--------+--------+---------------------+
+     | StringSerializer    | Large  | OK     | No     | Learning, debugging |
+     | JsonSerializer      | Large  | OK     | No     | Dev, flexible data  |
+     | AvroSerializer      | Small  | Fast   | Yes    | PRODUCTION standard |
+     | ProtobufSerializer  | Small  | Fast   | Yes    | gRPC shops          |
+     +---------------------+--------+--------+--------+---------------------+
+
+   StringSerializer vs JsonSerializer:
+     StringSerializer → YOU convert object to string, Kafka converts string to bytes
+     JsonSerializer   → YOU pass object directly, Kafka does object → JSON → bytes
+
+   Why Avro wins in production:
+     JSON (field names repeated in EVERY message):
+       {"name":"John","age":30}  {"name":"Jane","age":25}  (redundant field names)
+
+     Avro (schema stored ONCE in Schema Registry, messages carry only values):
+       Schema (once): {fields: [name:string, age:int]}
+       Messages:      [John, 30]  [Jane, 25]              (no field names)
+
+     At millions of messages/sec, not repeating field names saves massive bandwidth.
+
+   Rule of thumb:
+     Learning/Dev  → StringSerializer or JsonSerializer
+     Production    → AvroSerializer (with Schema Registry)
+
+================================================================================
