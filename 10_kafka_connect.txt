@@ -328,51 +328,6 @@ DEAD LETTER QUEUE:
         - Connector/task information
 
 ================================================================================
-7. MONITORING
-================================================================================
-
-JMX METRICS:
-
-    Connector Metrics:
-        kafka.connect:type=connector-metrics,connector=*
-        - connector-count
-        - connector-startup-attempts-total
-        - connector-startup-success-total
-
-    Task Metrics:
-        kafka.connect:type=connector-task-metrics,connector=*,task=*
-        - offset-commit-success-percentage
-        - offset-commit-avg-time-ms
-        - batch-size-avg
-
-    Source Task Metrics:
-        kafka.connect:type=source-task-metrics
-        - source-record-poll-rate
-        - source-record-write-rate
-
-    Sink Task Metrics:
-        kafka.connect:type=sink-task-metrics
-        - sink-record-read-rate
-        - sink-record-send-rate
-
-REST API MONITORING:
-
-    Health Check:
-        GET /connectors/{name}/status
-
-    States:
-        RUNNING - Operating normally
-        PAUSED - Manually paused
-        FAILED - Error occurred
-        UNASSIGNED - Not assigned to worker
-
-LOGGING:
-
-    Configure log level:
-        PUT /admin/loggers/io.confluent.connect
-        {"level": "DEBUG"}
-
-================================================================================
 QUICK REFERENCE
 ================================================================================
 

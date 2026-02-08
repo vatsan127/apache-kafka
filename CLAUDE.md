@@ -19,6 +19,7 @@ This is a **learning/study repository** for Apache Kafka - a collection of educa
 - `09_kafka_rate_limiting.txt` - Quotas, throttling, multi-tenant scenarios
 - `10_kafka_connect.txt` - Source/sink connectors, transforms, REST API
 - `11_kafka_streams.txt` - KStream, KTable, topology, windowing, state stores
+- `12_kafka_kraft_vs_zookeeper.txt` - KRaft vs ZooKeeper, Schema Registry with Connect
 - `kafka_commands.txt` - CLI commands reference (topics, producers, consumers, offsets)
 - `kafka_streams_commands.txt` - Kafka Streams CLI (reset, internal topics, state stores)
 - `NextTopics` - Learning roadmap and progress tracker
@@ -55,5 +56,5 @@ kafka-consumer-groups.sh --describe --group <name> --bootstrap-server localhost:
 
 ## Learning Progress
 
-Completed: Installation, Fundamentals, Core Concepts, Performance, Producers, Consumers, Rebalancing, Consumer Lag, Rate Limiting, Kafka Connect, Kafka Streams
+Completed: Installation, Fundamentals, Core Concepts, Performance, Producers, Consumers, Rebalancing, Consumer Lag, Rate Limiting, Kafka Connect, Kafka Streams, KRaft vs ZooKeeper
 Pending: Spring Boot

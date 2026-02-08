@@ -1,0 +1,87 @@
+Kafka: ZooKeeper vs KRaft
+=========================
+
+ZooKeeper Mode (Legacy)
+-----------------------
+- Kafka relied on an external ZooKeeper cluster to manage metadata
+- ZooKeeper handled: broker registration, controller election, topic/partition metadata, ACLs
+- Required running and maintaining a separate distributed system (typically 3-5 ZooKeeper nodes)
+- Two different systems to configure, monitor, secure, and troubleshoot
+
+KRaft Mode (Current)
+--------------------
+- Metadata is managed within Kafka itself using a Raft consensus protocol
+- A set of Kafka brokers act as controllers (or dedicated controller nodes in large clusters)
+- Metadata is stored in an internal topic (__cluster_metadata) instead of ZooKeeper znodes
+- Single system to deploy and manage
+
+Key Differences
+---------------
++------------------------+-------------------------------------------+-------------------------------------------+
+| Aspect                 | ZooKeeper                                 | KRaft                                     |
++------------------------+-------------------------------------------+-------------------------------------------+
+| Architecture           | Kafka + separate ZooKeeper cluster        | Kafka only                                |
+| Metadata storage       | ZooKeeper znodes                          | Internal Raft log (__cluster_metadata)    |
+| Controller election    | ZooKeeper-based                           | Raft-based quorum                         |
+| Scalability            | Limited (~200K partitions)                | Handles millions of partitions            |
+| Startup time           | Slow — metadata loaded from ZooKeeper     | Fast — metadata read from local log       |
+| Shutdown               | Controller failover can be slow           | Faster, more predictable failover         |
+| Operational complexity | High — two systems                        | Lower — one system                        |
+| Configuration          | server.properties + zookeeper.properties  | kraft/server.properties only              |
++------------------------+-------------------------------------------+-------------------------------------------+
+
+Why the Shift to KRaft?
+-----------------------
+1. Simpler operations — no ZooKeeper to manage, one less system to break
+2. Better scalability — ZooKeeper was the bottleneck for large clusters
+3. Faster failover — controller election via Raft is quicker and more predictable
+4. Faster shutdown/startup — no need to sync metadata from an external system
+5. Unified security — one security model instead of securing both Kafka and ZooKeeper
+
+Timeline
+--------
+- KRaft introduced as early access in Kafka 2.8
+- Production-ready in Kafka 3.3
+- ZooKeeper deprecated in Kafka 3.5
+- ZooKeeper removed in Kafka 4.0 (released 2025)
+
+Schema Registry and Kafka Connect
+----------------------------------
+Kafka Connect does NOT always need Schema Registry — it depends on the converters configured.
+
+When Schema Registry IS Needed:
+- Avro converter (io.confluent.connect.avro.AvroConverter)
+- Protobuf converter (io.confluent.connect.protobuf.ProtobufConverter)
+- JSON Schema converter (io.confluent.connect.json.JsonSchemaConverter)
+These store schemas in Schema Registry and embed only a schema ID in the message.
+
+When Schema Registry is NOT Needed:
+- JsonConverter (org.apache.kafka.connect.json.JsonConverter) — embeds schema inline or disable with schemas.enable=false
+- StringConverter — plain strings, no schema
+- ByteArrayConverter — raw bytes, no schema
+
+Why Schema Registry is Commonly Used with Connect:
+1. Data integrity — ensures producers and consumers agree on the data format
+2. Schema evolution — allows fields to be added/removed safely over time
+3. Smaller message size — stores schema once instead of embedding in every message
+4. Cross-connector compatibility — source and sink connectors share the same schema seamlessly
+
+Q&A
+---
+Q1: Can Kafka run without ZooKeeper?
+A: Yes, since Kafka 3.3 with KRaft mode. ZooKeeper was fully removed in Kafka 4.0.
+
+Q2: What does KRaft stand for?
+A: Kafka Raft — it uses the Raft consensus protocol for metadata management.
+
+Q3: Where does KRaft store metadata?
+A: In an internal topic called __cluster_metadata, stored as a Raft log.
+
+Q4: What was the main scalability limitation with ZooKeeper?
+A: ZooKeeper became a bottleneck at around 200K partitions. KRaft can handle millions.
+
+Q5: Does Kafka Connect require Schema Registry?
+A: No. It depends on the converter. JsonConverter, StringConverter, and ByteArrayConverter work without it. Avro/Protobuf/JSON Schema converters need it.
+
+Q6: Why use Schema Registry with Kafka Connect?
+A: For data integrity, schema evolution, smaller message sizes, and cross-connector compatibility.

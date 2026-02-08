@@ -15,4 +15,7 @@ Completed:
 [x] 11. Kafka Streams - KStream, KTable, topology, windowing, state stores
 
 Pending:
-[ ] 12. Spring Boot - Spring Kafka, templates, listeners, configuration
+[ ] 13. Spring Boot - Spring Kafka, templates, listeners, configuration
+
+Recently Added:
+[x] 12. KRaft vs ZooKeeper - Architecture differences, Schema Registry with Connect
