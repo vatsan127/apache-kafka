@@ -78,29 +78,19 @@ TASKS:
 
 WORKERS:
     - JVM processes that run connectors/tasks
-    - Two modes: Standalone, Distributed
 
     Standalone:
         - Single worker process
         - Good for development/testing
-        - No fault tolerance
-
-    Distributed:
-        - Multiple workers in cluster
-        - Tasks distributed across workers
-        - Automatic failover
-        - Production recommended
+        - Simple configuration
 
 ================================================================================
-3. DEPLOYMENT MODES
+3. STANDALONE DEPLOYMENT
 ================================================================================
-
-STANDALONE MODE:
 
     Characteristics:
         - Single process
         - Offsets stored in local file
-        - No automatic failover
         - Simple configuration
 
     Use Cases:
@@ -118,29 +108,6 @@ STANDALONE MODE:
         key.converter=org.apache.kafka.connect.json.JsonConverter
         value.converter=org.apache.kafka.connect.json.JsonConverter
         offset.storage.file.filename=/tmp/connect.offsets
-
-DISTRIBUTED MODE:
-
-    Characteristics:
-        - Multiple workers
-        - Offsets stored in Kafka topic
-        - Automatic load balancing
-        - Fault tolerant
-
-    Use Cases:
-        - Production deployments
-        - High availability requirements
-        - Large-scale data pipelines
-
-    Start Command:
-        connect-distributed.sh config/connect-distributed.properties
-
-    Configuration (connect-distributed.properties):
-        bootstrap.servers=localhost:9092
-        group.id=connect-cluster
-
-        key.converter=org.apache.kafka.connect.json.JsonConverter
-        value.converter=org.apache.kafka.connect.json.JsonConverter
 
 ================================================================================
 4. JDBC CONNECTORS
@@ -333,7 +300,6 @@ QUICK REFERENCE
 
 DEPLOYMENT:
     Standalone: connect-standalone.sh <worker.props> <connector.props>
-    Distributed: connect-distributed.sh <worker.props>
 
 REST API (Base URL: http://localhost:8083):
 
