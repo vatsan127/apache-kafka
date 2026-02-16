@@ -85,32 +85,7 @@ WORKERS:
         - Simple configuration
 
 ================================================================================
-3. STANDALONE DEPLOYMENT
-================================================================================
-
-    Characteristics:
-        - Single process
-        - Offsets stored in local file
-        - Simple configuration
-
-    Use Cases:
-        - Development and testing
-        - Simple pipelines
-        - Edge deployments
-
-    Start Command:
-        connect-standalone.sh \
-            config/connect-standalone.properties \
-            config/source-connector.properties
-
-    Configuration (connect-standalone.properties):
-        bootstrap.servers=localhost:9092
-        key.converter=org.apache.kafka.connect.json.JsonConverter
-        value.converter=org.apache.kafka.connect.json.JsonConverter
-        offset.storage.file.filename=/tmp/connect.offsets
-
-================================================================================
-4. JDBC CONNECTORS
+3. JDBC CONNECTORS
 ================================================================================
 
 JDBC SOURCE CONNECTOR:
@@ -126,24 +101,29 @@ JDBC SOURCE CONNECTOR:
         - timestamp: Track new/updated rows by timestamp column
         - timestamp+incrementing: Combination of both
 
-    Configuration:
-            connector.class=io.confluent.connect.jdbc.JdbcSourceConnector
-            connection.url=jdbc:postgresql://localhost:5432/mydb
-            connection.user=user
-            connection.password=password
-            mode=incrementing
-            incrementing.column.name=id
-            topic.prefix=postgres-
-            table.whitelist=users,orders
-            poll.interval.ms=5000
-
     Key Parameters:
         - mode: bulk | incrementing | timestamp | timestamp+incrementing
         - incrementing.column.name: Column to track new rows
         - timestamp.column.name: Column to track updates
         - topic.prefix: Prefix for created topics
-        - table.whitelist: Tables to include
+        - table.whitelist: Tables to include (deprecated, use table.include.list)
+        - table.include.list: Tables to include (e.g., public.employee)
+        - incrementing.column.mapping: Per-table incrementing column
+          (e.g., public.employee:emp_id)
         - poll.interval.ms: How often to poll database
+
+    HANDS-ON EXAMPLE - PostgreSQL JDBC Source:
+
+        Database Setup:
+            CREATE TABLE employee (
+                emp_id SERIAL,
+                emp_name VARCHAR(50),
+                dept_id INTEGER
+            );
+
+            INSERT INTO public.employee (emp_name, dept_id) VALUES ('sriv', 10);
+
+            SELECT * FROM employee;
 
 JDBC SINK CONNECTOR:
 
@@ -157,19 +137,6 @@ JDBC SINK CONNECTOR:
         - upsert: INSERT with ON CONFLICT UPDATE (or equivalent)
         - update: Only UPDATE existing rows
 
-    Configuration:
-            connector.class=io.confluent.connect.jdbc.JdbcSinkConnector
-            connection.url=jdbc:postgresql://localhost:5432/mydb
-            connection.user=user
-            connection.password=password
-            topics=orders
-            auto.create=true
-            auto.evolve=true
-            insert.mode=upsert
-            pk.mode=record_key
-            pk.fields=id
-            batch.size=3000
-
     Key Parameters:
         - auto.create: Auto-create tables if not exists
         - auto.evolve: Auto-add columns for new fields
@@ -179,7 +146,7 @@ JDBC SINK CONNECTOR:
         - batch.size: Number of records per batch
 
 ================================================================================
-5. REST API
+4. REST API
 ================================================================================
 
 Kafka Connect exposes REST API for management (default port: 8083)
@@ -194,29 +161,51 @@ CONNECTOR MANAGEMENT:
         POST /connectors
         Content-Type: application/json
 
-        {
-            "name": "my-source-connector",
-            "config": {
-                "connector.class": "FileStreamSource",
-                "file": "/path/to/file.txt",
-                "topic": "my-topic"
-            }
-        }
+        curl -X POST http://localhost:8083/connectors \
+            -H "Content-Type: application/json" \
+            -d '{
+                "name": "test-connector",
+                "config": {
+                    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+                    "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
+                    "connection.user": "srivatsan",
+                    "connection.password": "password",
+                    "mode": "incrementing",
+                    "incrementing.column.mapping": "public.employee:emp_id",
+                    "topic.prefix": "pg-",
+                    "table.include.list": "public.employee"
+                }
+            }'
 
     Get Connector: GET /connectors/{name}
     Get Connector Config: GET /connectors/{name}/config
+
+    Get Connector Status:
+        GET /connectors/{name}/status
+
+        curl http://localhost:8083/connectors/test-connector/status
+
     Update Connector:
         PUT /connectors/{name}/config
         Content-Type: application/json
 
-        {
-            "connector.class": "FileStreamSource",
-            "file": "/new/path/file.txt",
-            "topic": "my-topic"
-        }
+        curl -X PUT http://localhost:8083/connectors/test-connector/config \
+            -H "Content-Type: application/json" \
+            -d '{
+                "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+                "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
+                "connection.user": "srivatsan",
+                "connection.password": "password",
+                "mode": "incrementing",
+                "incrementing.column.mapping": "public.employee:emp_id",
+                "topic.prefix": "pg-",
+                "table.include.list": "public.employee"
+            }'
 
-    Delete Connector: DELETE /connectors/{name}
-    Get Connector Status: GET /connectors/{name}/status
+    Delete Connector:
+        DELETE /connectors/{name}
+
+        curl -X DELETE http://localhost:8083/connectors/test-connector
 
 TASK MANAGEMENT:
     List Tasks: GET /connectors/{name}/tasks
@@ -229,7 +218,7 @@ CONNECTOR CONTROL:
     Restart Connector: POST /connectors/{name}/restart
 
 ================================================================================
-6. ERROR HANDLING
+5. ERROR HANDLING
 ================================================================================
 
 ERROR TYPES:
@@ -266,21 +255,6 @@ ERROR HANDLING CONFIGURATION:
         - Topic for failed records
         - Enables later inspection/reprocessing
 
-EXAMPLE - TOLERANT CONNECTOR:
-
-    {
-        "name": "tolerant-sink",
-        "config": {
-            "connector.class": "JdbcSinkConnector",
-            ...
-            "errors.tolerance": "all",
-            "errors.log.enable": "true",
-            "errors.log.include.messages": "true",
-            "errors.deadletterqueue.topic.name": "dlq-jdbc-sink",
-            "errors.deadletterqueue.topic.replication.factor": "3"
-        }
-    }
-
 DEAD LETTER QUEUE:
 
     Purpose:
@@ -301,45 +275,27 @@ QUICK REFERENCE
 DEPLOYMENT:
     Standalone: connect-standalone.sh <worker.props> <connector.props>
 
-REST API (Base URL: http://localhost:8083):
+REST API ENDPOINTS (Base: http://localhost:8083):
+    GET  /connector-plugins                     List available plugins
+    GET  /connectors                            List all connectors
+    POST /connectors                            Create connector
+    GET  /connectors/{name}/status              Connector status
+    PUT  /connectors/{name}/config              Update connector config
+    DELETE /connectors/{name}                   Delete connector
+    PUT  /connectors/{name}/pause               Pause connector
+    PUT  /connectors/{name}/resume              Resume connector
+    POST /connectors/{name}/restart             Restart connector
+    GET  /connectors/{name}/tasks               List tasks
+    POST /connectors/{name}/tasks/{id}/restart  Restart task
 
-    # List all connectors
-    curl http://localhost:8083/connectors
+KAFKA COMMANDS FOR CONNECT:
+    # List topics (verify connector-created topics)
+    kafka-topics.sh --bootstrap-server localhost:9092 --list
 
-    # Create connector
-    curl -X POST http://localhost:8083/connectors \
-        -H "Content-Type: application/json" \
-        -d '{"name":"my-connector","config":{...}}'
-
-    # Get connector details
-    curl http://localhost:8083/connectors/my-connector
-
-    # Get connector status
-    curl http://localhost:8083/connectors/my-connector/status
-
-    # Update connector config
-    curl -X PUT http://localhost:8083/connectors/my-connector/config \
-        -H "Content-Type: application/json" \
-        -d '{"connector.class":"...","topic":"..."}'
-
-    # Delete connector
-    curl -X DELETE http://localhost:8083/connectors/my-connector
-
-    # Pause connector
-    curl -X PUT http://localhost:8083/connectors/my-connector/pause
-
-    # Resume connector
-    curl -X PUT http://localhost:8083/connectors/my-connector/resume
-
-    # Restart connector
-    curl -X POST http://localhost:8083/connectors/my-connector/restart
-
-    # List connector plugins
-    curl http://localhost:8083/connector-plugins
-
-JDBC CONNECTORS:
-    Source: Reads from PostgreSQL databases
-    Sink: Writes to PostgreSQL databases
+    # Consume from connector topic (Avro format with Schema Registry)
+    kafka-avro-console-consumer --bootstrap-server localhost:9092 \
+        --topic pg-employee --from-beginning \
+        --property schema.registry.url=http://localhost:8081
 
 ERROR HANDLING:
     errors.tolerance=all
