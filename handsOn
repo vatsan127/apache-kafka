@@ -1,0 +1,136 @@
+================================================================================
+                    KAFKA CONNECT - HANDS-ON
+================================================================================
+
+================================================================================
+1. SCHEMA REGISTRY API
+================================================================================
+
+Get list of schemas:          GET http://localhost:8081/subjects
+Get schema by ID:             GET http://localhost:8081/schemas/ids/{id}
+Get all versions of a schema: GET http://localhost:8081/subjects/{subject-name}/versions
+Get specific version:         GET http://localhost:8081/subjects/{subject-name}/versions/{version}
+Get latest version:           GET http://localhost:8081/subjects/{subject-name}/versions/latest
+Register a new schema:        POST http://localhost:8081/subjects/{subject-name}/versions
+    {
+        "schema": "{\"type\":\"record\",\"name\":\"employee\",\"fields\":[{\"name\":\"emp_id\",\"type\":\"int\"},{\"name\":\"emp_name\",\"type\":\"string\"},{\"name\":\"dept_id\",\"type\":\"int\"}]}"
+    }
+
+Delete a specific version:    DELETE http://localhost:8081/subjects/{subject-name}/versions/{version}
+Delete all versions:          DELETE http://localhost:8081/subjects/{subject-name}
+Permanent delete (hard):      DELETE http://localhost:8081/subjects/{subject-name}?permanent=true
+
+================================================================================
+2. KAFKA CONNECT API
+================================================================================
+
+CLUSTER INFORMATION:
+    GET http://localhost:8083/                  - Connect version info
+    GET http://localhost:8083/connectors        - List all connectors
+    GET http://localhost:8083/connector-plugins - List available connector plugins
+
+CONNECTOR MANAGEMENT:
+
+    Create Connector: POST http://localhost:8083/connectors
+        {
+            "name": "pg-employee-source-connector",
+            "config": {
+                "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+                "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
+                "connection.user": "srivatsan",
+                "connection.password": "password",
+                "mode": "incrementing",
+                "incrementing.column.mapping": "public.employee:emp_id",
+                "topic.prefix": "pg-",
+                "table.include.list": "public.employee"
+            }
+        }
+
+    Get Connector:        GET http://localhost:8083/connectors/pg-employee-source-connector
+    Get Connector Config: GET http://localhost:8083/connectors/pg-employee-source-connector/config
+    Get Connector Status: GET http://localhost:8083/connectors/pg-employee-source-connector/status
+
+    Update Connector: PUT http://localhost:8083/connectors/pg-employee-source-connector/config
+        {
+            "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+            "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
+            "connection.user": "srivatsan",
+            "connection.password": "password",
+            "mode": "incrementing",
+            "incrementing.column.mapping": "public.employee:emp_id",
+            "topic.prefix": "pg-",
+            "table.include.list": "public.employee"
+        }
+
+    Delete Connector: DELETE http://localhost:8083/connectors/pg-employee-source-connector
+
+================================================================================
+3. HANDS-ON
+================================================================================
+
+FLOW:
+    Producer → Kafka Topic → Sink Connector → DB Table → Source Connector → Another Kafka Topic
+
+Step 1: Register schema to Kafka Schema Registry
+    POST http://localhost:8081/subjects/employee-value/versions
+    {
+        "schema": "{\"type\":\"record\",\"name\":\"employee\",\"fields\":[{\"name\":\"emp_id\",\"type\":\"int\"},{\"name\":\"emp_name\",\"type\":\"string\"},{\"name\":\"dept_id\",\"type\":\"int\"}]}"
+    }
+
+Step 2: Create table
+    CREATE TABLE employee (
+        emp_id SERIAL,
+        emp_name VARCHAR(50),
+        dept_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        primary key (emp_id)
+    );
+
+Step 3: Setup Kafka Sink Connector
+    POST http://localhost:8083/connectors
+    {
+        "name": "pg-employee-sink-connector",
+        "config": {
+            "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+            "connection.url": "jdbc:postgresql://localhost:5432/postgres",
+            "connection.user": "srivatsan",
+            "connection.password": "password",
+            "topics": "employee-sink",
+            "table.name.format": "employee",
+            "auto.create": "true",
+            "auto.evolve": "true",
+            "insert.mode": "upsert",
+            "pk.mode": "record_value",
+            "pk.fields": "emp_id",
+            "batch.size": "1000"
+        }
+    }
+
+Step 4: Kafka Avro Producer
+    Get the schema ID from the schema-registry and then use it in the Avro producer
+    kafka-avro-console-producer --bootstrap-server localhost:9092 \
+        --topic employee-sink \
+        --property schema.registry.url=http://localhost:8081 \
+        --property value.schema.id=1
+
+    Sample data:
+        {"emp_id": 1, "emp_name": "sriv", "dept_id": 10}
+        {"emp_id": 2, "emp_name": "john", "dept_id": 20}
+
+Step 5: Setup Source Connector
+    POST http://localhost:8083/connectors
+    {
+        "name": "pg-employee-source-connector",
+        "config": {
+            "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+            "connection.url": "jdbc:postgresql://localhost:5432/postgres",
+            "connection.user": "srivatsan",
+            "connection.password": "password",
+            "mode": "incrementing",
+            "incrementing.column.mapping": "public.employee:emp_id",
+            "topic.prefix": "pg-",
+            "table.include.list": "public.employee"
+        }
+    }
+
+================================================================================

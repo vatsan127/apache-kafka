@@ -101,30 +101,6 @@ JDBC SOURCE CONNECTOR:
         - timestamp: Track new/updated rows by timestamp column
         - timestamp+incrementing: Combination of both
 
-    Key Parameters:
-        - mode: bulk | incrementing | timestamp | timestamp+incrementing
-        - incrementing.column.name: Column to track new rows
-        - timestamp.column.name: Column to track updates
-        - topic.prefix: Prefix for created topics
-        - table.whitelist: Tables to include (deprecated, use table.include.list)
-        - table.include.list: Tables to include (e.g., public.employee)
-        - incrementing.column.mapping: Per-table incrementing column
-          (e.g., public.employee:emp_id)
-        - poll.interval.ms: How often to poll database
-
-    HANDS-ON EXAMPLE - PostgreSQL JDBC Source:
-
-        Database Setup:
-            CREATE TABLE employee (
-                emp_id SERIAL,
-                emp_name VARCHAR(50),
-                dept_id INTEGER
-            );
-
-            INSERT INTO public.employee (emp_name, dept_id) VALUES ('sriv', 10);
-
-            SELECT * FROM employee;
-
 JDBC SINK CONNECTOR:
 
     Purpose:
@@ -137,88 +113,9 @@ JDBC SINK CONNECTOR:
         - upsert: INSERT with ON CONFLICT UPDATE (or equivalent)
         - update: Only UPDATE existing rows
 
-    Key Parameters:
-        - auto.create: Auto-create tables if not exists
-        - auto.evolve: Auto-add columns for new fields
-        - insert.mode: insert | upsert | update
-        - pk.mode: record_key | record_value | kafka
-        - pk.fields: Primary key field names
-        - batch.size: Number of records per batch
 
 ================================================================================
-4. REST API
-================================================================================
-
-Kafka Connect exposes REST API for management (default port: 8083)
-
-CLUSTER INFORMATION:
-    GET /                           - Connect version info
-    GET /connectors                 - List all connectors
-    GET /connector-plugins          - List available connector plugins
-
-CONNECTOR MANAGEMENT:
-    Create Connector:
-        POST /connectors
-        Content-Type: application/json
-
-        curl -X POST http://localhost:8083/connectors \
-            -H "Content-Type: application/json" \
-            -d '{
-                "name": "test-connector",
-                "config": {
-                    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
-                    "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
-                    "connection.user": "srivatsan",
-                    "connection.password": "password",
-                    "mode": "incrementing",
-                    "incrementing.column.mapping": "public.employee:emp_id",
-                    "topic.prefix": "pg-",
-                    "table.include.list": "public.employee"
-                }
-            }'
-
-    Get Connector: GET /connectors/{name}
-    Get Connector Config: GET /connectors/{name}/config
-
-    Get Connector Status:
-        GET /connectors/{name}/status
-
-        curl http://localhost:8083/connectors/test-connector/status
-
-    Update Connector:
-        PUT /connectors/{name}/config
-        Content-Type: application/json
-
-        curl -X PUT http://localhost:8083/connectors/test-connector/config \
-            -H "Content-Type: application/json" \
-            -d '{
-                "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
-                "connection.url": "jdbc:postgresql://localhost:5432/srivatsan",
-                "connection.user": "srivatsan",
-                "connection.password": "password",
-                "mode": "incrementing",
-                "incrementing.column.mapping": "public.employee:emp_id",
-                "topic.prefix": "pg-",
-                "table.include.list": "public.employee"
-            }'
-
-    Delete Connector:
-        DELETE /connectors/{name}
-
-        curl -X DELETE http://localhost:8083/connectors/test-connector
-
-TASK MANAGEMENT:
-    List Tasks: GET /connectors/{name}/tasks
-    Get Task Status: GET /connectors/{name}/tasks/{taskId}/status
-    Restart Task: POST /connectors/{name}/tasks/{taskId}/restart
-
-CONNECTOR CONTROL:
-    Pause Connector: PUT /connectors/{name}/pause
-    Resume Connector: PUT /connectors/{name}/resume
-    Restart Connector: POST /connectors/{name}/restart
-
-================================================================================
-5. ERROR HANDLING
+4. ERROR HANDLING
 ================================================================================
 
 ERROR TYPES:
@@ -274,19 +171,6 @@ QUICK REFERENCE
 
 DEPLOYMENT:
     Standalone: connect-standalone.sh <worker.props> <connector.props>
-
-REST API ENDPOINTS (Base: http://localhost:8083):
-    GET  /connector-plugins                     List available plugins
-    GET  /connectors                            List all connectors
-    POST /connectors                            Create connector
-    GET  /connectors/{name}/status              Connector status
-    PUT  /connectors/{name}/config              Update connector config
-    DELETE /connectors/{name}                   Delete connector
-    PUT  /connectors/{name}/pause               Pause connector
-    PUT  /connectors/{name}/resume              Resume connector
-    POST /connectors/{name}/restart             Restart connector
-    GET  /connectors/{name}/tasks               List tasks
-    POST /connectors/{name}/tasks/{id}/restart  Restart task
 
 KAFKA COMMANDS FOR CONNECT:
     # List topics (verify connector-created topics)
