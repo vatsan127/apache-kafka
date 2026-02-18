@@ -522,6 +522,411 @@ MAX PARALLELISM:
     - More threads/instances than tasks = idle resources
 
 ================================================================================
+10. REPARTITIONING
+================================================================================
+
+WHAT IS REPARTITIONING?
+    - When you change the key of a message, Kafka Streams creates a new
+      internal topic (repartition topic) to re-sort messages by the new key
+    - Ensures all messages with the same key land in the same partition
+    - This is essential for correct aggregations and joins
+
+WHEN DOES REPARTITIONING HAPPEN?
+
+    +-------------------------------+---------------------+
+    | Operation                     | Repartition?        |
+    +-------------------------------+---------------------+
+    | groupByKey()                  | NO  (key unchanged) |
+    | groupBy(same key)             | NO  (key unchanged) |
+    | groupBy(different key)        | YES (key changes)   |
+    | selectKey() + join()          | YES (key changes)   |
+    | map() that changes key        | YES (key changes)   |
+    | mapValues()                   | NO  (key unchanged) |
+    +-------------------------------+---------------------+
+
+    Simple rule: repartition triggers when the key changes.
+
+HOW REPARTITIONING WORKS:
+
+    Input topic (key=customerId, 6 partitions):
+
+        P0: [C1:order1] [C2:order2] [C1:order3]
+        P1: [C3:order4] [C1:order5] [C2:order6]
+        ...
+
+    After groupBy(category):
+
+        Repartition topic (key=category, 6 partitions):
+
+        P0: [Action:order1] [Action:order3] [Action:order5]  ← ALL Action
+        P1: [Comedy:order2] [Comedy:order6]                  ← ALL Comedy
+        P2: [Horror:order4]                                  ← ALL Horror
+
+    Now each partition owns ALL records for a specific key.
+    Aggregation is correct — no split counts.
+
+COST OF REPARTITIONING:
+
+    Without repartition (key matches grouping):
+        Read 1M → Aggregate → Done          (1M I/O)
+
+    With repartition (key differs from grouping):
+        Read 1M → Write 1M to repartition topic → Read 1M again → Aggregate
+        Total: 3M I/O (3x the cost)
+
+MULTIPLE GROUPBY = MULTIPLE REPARTITIONS:
+
+    // Branch 1: revenue per category
+    stream.groupBy((key, value) -> value.getCategory()).reduce(...);
+
+    // Branch 2: orders per customer
+    stream.groupBy((key, value) -> value.getCustomerId()).count();
+
+    Creates 2 repartition topics. Same 1M messages repartitioned twice.
+
+REPARTITION TOPIC PARTITION COUNT:
+    - Inherits partition count from the input topic
+    - 1 partition input → 1 partition repartition (no parallelism gain)
+    - 6 partition input → 6 partition repartition (parallel processing)
+
+BEST PRACTICE:
+    - Produce with the right key upfront to avoid repartitioning
+    - If you must re-key, do it once early in the topology with selectKey()
+    - One repartition at the top is cheaper than multiple deeper in the topology
+
+================================================================================
+11. KEYS AND PARTITIONS — CORRECTNESS vs PERFORMANCE
+================================================================================
+
+WHY KEYS MATTER:
+
+    Messages with the same key always go to the same partition (hash partitioning).
+    This guarantees that one consumer/task owns ALL data for a given key.
+
+    With key:    hash(key) % partitions = target partition (deterministic)
+    Without key: round-robin across partitions (random)
+
+NO KEY — THE PROBLEM:
+
+    Topic: orders (3 partitions, no key, round-robin)
+
+    P0: Action, Comedy, Action      ← Action is split
+    P1: Horror, Action, Comedy      ← across all
+    P2: Comedy, Action, Horror      ← partitions
+
+    Pod 1 (P0): Action=2    WRONG — partial count
+    Pod 2 (P1): Action=1    WRONG — partial count
+    Pod 3 (P2): Action=1    WRONG — partial count
+
+    Nobody has the full count. All answers are wrong.
+
+    Fix: groupBy(category) triggers repartition, Kafka Streams fixes it.
+    But you pay the repartition cost.
+
+COMBINATIONS AND THEIR IMPACT:
+
+    +----------------------------+-------------+-------------+
+    | Setup                      | Parallelism | Correctness |
+    +----------------------------+-------------+-------------+
+    | No key  + 1 partition      | None        | Needs repartition |
+    | Has key + 1 partition      | None        | Correct but slow  |
+    | No key  + 6 partitions     | Parallel    | Needs repartition |
+    | Has key + 6 partitions     | Parallel    | Correct and fast  |
+    +----------------------------+-------------+-------------+
+
+    Partitions decide parallelism. Keys decide correctness. You need both.
+
+DETAILED BREAKDOWN OF EACH COMBINATION:
+
+    CASE 1: No key + 1 partition
+    ─────────────────────────────
+        - All 1M messages in 1 partition (only partition)
+        - 1 partition = 1 consumer. Other pods sit idle.
+        - groupBy(category) creates repartition topic — BUT it also gets 1 partition
+          (inherits from input). So 1M messages re-written for nothing.
+        - Result: correct, but zero parallelism. Worst case.
+
+        Pod 1: reads all 1M, does all the work
+        Pod 2: idle
+        Pod 3: idle
+
+    CASE 2: Has key + 1 partition
+    ─────────────────────────────
+        - All 1M messages in 1 partition, but keys are set correctly
+        - Still 1 partition = 1 consumer. Other pods idle.
+        - groupByKey() → no repartition (key matches). Saves I/O.
+        - groupBy(differentKey) → repartition happens, but repartition topic
+          also gets 1 partition. Still no parallelism.
+        - Result: correct, saves repartition cost if key matches, but still slow.
+
+        Pod 1: reads all 1M, aggregates alone
+        Pod 2: idle
+        Pod 3: idle
+
+    CASE 3: No key + 6 partitions
+    ─────────────────────────────
+        - 1M messages spread across 6 partitions (round-robin, ~166K each)
+        - 6 consumers can read in parallel. Fast reads.
+        - BUT same key (e.g., "Action") is scattered across all partitions
+        - groupBy(category) → repartition topic created with 6 partitions
+          All 1M messages re-written, re-sorted by category.
+        - After repartition: each partition owns ALL records for specific keys.
+        - Result: correct after repartition, parallel, but 3x I/O cost.
+
+        Read (parallel):
+            Pod 1: P0 ~166K    Pod 2: P1 ~166K    ...    Pod 6: P5 ~166K
+
+        Repartition (1M re-written):
+            P0: all Action    P1: all Comedy    P2: all Horror    ...
+
+        Aggregate (parallel, correct):
+            Pod 1: Action=$50K    Pod 2: Comedy=$35K    Pod 3: Horror=$25K
+
+    CASE 4: Has key (= category) + 6 partitions
+    ─────────────────────────────────────────────
+        - 1M messages spread across 6 partitions BY KEY
+        - All "Action" already in same partition, all "Comedy" in same partition
+        - groupByKey() → NO repartition! Key already matches.
+        - 6 consumers work in parallel, each owns complete data for its keys.
+        - Result: correct AND fast. Best case. Zero extra I/O.
+
+        Pod 1 (P0,P1): Action=$50K, Comedy=$35K    ← complete, no gaps
+        Pod 2 (P2,P3): Horror=$25K, Sci-Fi=$12K    ← complete, no gaps
+        Pod 3 (P4,P5): Drama=$20K, Romance=$18K    ← complete, no gaps
+
+    IMPORTANT: Even in Case 4, if you groupBy(differentKey) — e.g., key is
+    customerId but you groupBy(category) — repartition still happens.
+    Repartition is triggered by KEY CHANGE, not by missing keys.
+
+WHAT OPERATIONS NEED A KEY:
+
+    +--------------------------------------+-----------+
+    | Operation                            | Need key? |
+    +--------------------------------------+-----------+
+    | map(), filter(), mapValues()          | No        |
+    | groupBy(newKey)                       | No — auto-repartitions |
+    | groupByKey()                          | Yes — groups by null otherwise |
+    | join()                               | Yes — matches on key |
+    | selectKey() + join()                  | Yes — re-keys first |
+    +--------------------------------------+-----------+
+
+================================================================================
+12. CHANGELOG TOPIC — UPDATE FREQUENCY & COST
+================================================================================
+
+WHEN IS THE CHANGELOG UPDATED?
+    - Not on every single event (despite state changing on every event)
+    - Batched and flushed at commit intervals
+
+COMMIT INTERVAL:
+    - commit.interval.ms = 30000 (default, at-least-once)
+    - commit.interval.ms = 100   (default, exactly-once)
+
+    Events 1-10000 arrive within 30 seconds:
+        → RocksDB updated on every event (local, fast)
+        → Changelog flushed ONCE at commit (not 10000 times)
+
+RECORD CACHE (DEDUPLICATION BEFORE WRITE):
+
+    cache.max.bytes.buffering = 10485760 (10MB default)
+
+    If key "Action" is updated 5000 times within one commit interval,
+    only the FINAL value is written to the changelog.
+
+    Without cache:  1M events → 1M changelog writes
+    With cache:     1M events → ~1000 changelog writes (one per unique key)
+
+CHANGELOG TOPIC PROPERTIES:
+    - Compacted topic — only latest value per key survives on disk
+    - Internal topic — not consumed by your other applications
+    - Small records — just key=aggregated_value
+    - 10K unique keys × 1KB each = ~10MB on broker. Tiny.
+
+BROKER IMPACT:
+
+    +------------------+-------------------------------------------+
+    | Concern          | Impact                                    |
+    +------------------+-------------------------------------------+
+    | Broker CPU       | Low                                       |
+    | Broker disk      | Low (compacted, only latest per key)      |
+    | Broker network   | Low (batched writes at commit interval)   |
+    | App memory (JVM) | Moderate (RocksDB block cache ~50MB)      |
+    | App disk         | Moderate (RocksDB state store files)      |
+    +------------------+-------------------------------------------+
+
+    The broker is NOT the bottleneck — your app's local disk and memory are.
+
+================================================================================
+13. STATE STORE RESTORATION ON RESTART
+================================================================================
+
+WHAT HAPPENS WHEN YOUR APP/POD RESTARTS?
+
+    It does NOT reprocess from the beginning of the input topic.
+    Consumer offsets are committed to Kafka — it resumes from where it left off.
+    State is restored from the changelog topic (not the input topic).
+
+SCENARIO 1: SAME DISK (VM, persistent volume)
+
+    App stops → App restarts
+        → RocksDB files still on disk? YES → resumes instantly
+        → No restoration needed
+
+SCENARIO 2: DISK IS GONE (Kubernetes ephemeral storage)
+
+    New pod starts
+        → Empty RocksDB
+        → Reads changelog topic from Kafka (the backup)
+        → Replays all changelog events into RocksDB ("restoration")
+        → Catches up, then resumes normal processing
+
+    During restoration, the app does NOT process new events.
+    It waits until state is fully rebuilt.
+
+RESTORATION TIME:
+
+    +-------------------+------------------------------+
+    | State Store Size  | Approximate Restoration Time |
+    +-------------------+------------------------------+
+    | 10K keys          | Seconds                      |
+    | 1M keys           | ~30 seconds to few minutes   |
+    | 100M keys         | Minutes to tens of minutes   |
+    +-------------------+------------------------------+
+
+SOLUTIONS FOR FASTER RECOVERY:
+
+    Option 1: Persistent Volumes (Kubernetes PVC)
+
+        volumes:
+          - name: kafka-streams-state
+            persistentVolumeClaim:
+              claimName: streams-state-pvc
+
+        spring.kafka.streams.properties.state.dir=/var/kafka-streams
+
+        Pod restarts → RocksDB files survive → instant resume.
+
+    Option 2: Standby Replicas
+
+        spring.kafka.streams.properties.num.standby.replicas=1
+
+        Keeps a hot copy of every state store on another instance.
+        If instance A dies, instance B already has the state.
+
+        Instance A (active)          Instance B (standby)
+        ┌──────────────┐            ┌──────────────┐
+        │ RocksDB      │──replica──→│ RocksDB copy │
+        │ (processing) │            │ (hot standby)│
+        └──────────────┘            └──────────────┘
+
+    Option 3: Both (production recommendation)
+        Persistent volumes + standby replicas = fastest recovery
+
+================================================================================
+14. SCALING — REBALANCING & STATE MIGRATION
+================================================================================
+
+HOW STATE STAYS IN SYNC ACROSS PODS:
+
+    Key insight: State is NOT shared. Each instance owns specific partitions,
+    and state is partitioned the same way.
+
+    After groupBy(category) with repartitioning:
+
+        Instance A                      Instance B
+        ┌──────────────────┐           ┌──────────────────┐
+        │ Partition 0, 1   │           │ Partition 2, 3   │
+        │                  │           │                  │
+        │ RocksDB:         │           │ RocksDB:         │
+        │  Action = 80.00  │ ← ALL     │  Horror = 35.00  │ ← ALL
+        │  Comedy = 35.00  │   Action  │  Sci-Fi = 12.00  │   Horror
+        └──────────────────┘           └──────────────────┘
+
+    No conflicts. No lost updates. Each key is owned by exactly one instance.
+
+WHAT HAPPENS WHEN YOU ADD A POD (SCALE UP)?
+
+    1. New pod joins the consumer group
+    2. Kafka triggers a rebalance
+    3. Some partitions move from existing pods to the new pod
+    4. Old pod flushes state to changelog, closes RocksDB for those partitions
+    5. New pod reads changelog for its new partitions, rebuilds RocksDB
+    6. Processing resumes — no events lost, no duplicates
+
+    During rebalance:
+        - Events for migrating partitions: PAUSED
+        - Events for non-migrating partitions: UNAFFECTED
+        - State for migrating partitions: MIGRATED via changelog
+        - Lost updates: NONE — processing pauses during handoff
+
+INTERACTIVE QUERIES ACROSS PODS:
+
+    Problem: GET /revenue/Action hits Pod 1 but Action's state is on Pod 2.
+
+    Solution: Kafka Streams metadata API knows which instance owns which key.
+
+        StreamsMetadata metadata = streams.queryMetadataForKey(
+            "revenue-store", "Action", Serdes.String().serializer()
+        );
+
+        if (metadata.isLocal()) {
+            return localStore.get("Action");        // query local RocksDB
+        } else {
+            // forward request to correct instance
+            return restTemplate.getForObject(
+                "http://" + metadata.host() + ":" + metadata.port() + "/revenue/Action"
+            );
+        }
+
+EXACTLY-ONCE DURING SCALING:
+
+    With processing.guarantee=exactly_once_v2:
+
+        Read input → Update RocksDB → Write changelog → Write output → Commit offset
+        ALL in a single Kafka transaction. Either ALL succeed or NONE.
+
+        No partial writes. No lost updates. Even during rebalancing.
+
+================================================================================
+15. KAFKA STREAMS vs REGULAR KAFKA CONSUMER + PRODUCER
+================================================================================
+
+REGULAR KAFKA APP:
+
+    @KafkaListener → your code processes → KafkaTemplate.send()
+
+    - You manage: consumer loop, offsets, error handling, scaling, state
+    - Processing is imperative — you write all the glue code
+    - State (if any) lives in an external database (Redis, Postgres)
+    - Scaling: you handle rebalancing logic
+
+KAFKA STREAMS:
+
+    StreamsBuilder → declare topology → runtime handles everything
+
+    - No @KafkaListener, no KafkaTemplate
+    - Declarative pipeline — you define WHAT, Kafka Streams handles HOW
+    - Built-in state stores — no external database for aggregations
+    - Automatic offset management, rebalancing, fault tolerance
+    - Exactly-once semantics built in
+    - Scales by adding instances — partitions auto-redistribute
+
+WHEN TO USE WHICH:
+
+    +--------------------------------------+-------------------+------------------+
+    | Scenario                             | Regular Consumer  | Kafka Streams    |
+    +--------------------------------------+-------------------+------------------+
+    | Simple consume → process → produce   | ✓ Simpler         |                  |
+    | Stateless transformations            | Either works      | Cleaner code     |
+    | Aggregations (count, sum, avg)       |                   | ✓ Built-in state |
+    | Joining two topics                   |                   | ✓ Built-in joins |
+    | Windowed operations (per minute)     |                   | ✓ Built-in       |
+    | Need external DB for enrichment      | ✓ Direct DB call  |                  |
+    | Real-time dashboard without DB       |                   | ✓ Interactive Q  |
+    | Exactly-once processing              |                   | ✓ Built-in       |
+    +--------------------------------------+-------------------+------------------+
+
+================================================================================
 QUICK REFERENCE
 ================================================================================
 
@@ -534,11 +939,17 @@ QUICK REFERENCE
 | Topology           | DAG of processors defining data flow               |
 | State Store        | Local storage for stateful operations (RocksDB)    |
 | Changelog Topic    | Kafka topic backing state store                    |
+| Repartition Topic  | Internal topic created when key changes             |
 | Task               | Unit of parallelism (one per partition)            |
 | Stream Thread      | Thread executing tasks                             |
+| Standby Replica    | Hot copy of state store on another instance        |
+| Interactive Query  | REST API reading directly from state store         |
 +--------------------+----------------------------------------------------+
 
-STATELESS: filter, map, mapValues, flatMap, selectKey, branch, merge
+STATELESS: filter, map, mapValues, flatMap, selectKey, branch, merge, peek, foreach
 STATEFUL:  count, reduce, aggregate, join, windowed operations
+
+REPARTITION TRIGGERS: groupBy(newKey), selectKey(), map() that changes key
+NO REPARTITION:       groupByKey(), mapValues(), filter()
 
 ================================================================================
